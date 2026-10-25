@@ -17,15 +17,17 @@ const {
 } = require('discord.js');
 const db = require('../lib/db');
 const { canUse } = require('../lib/access');
+const { renderMessage, hasSharp } = require('../lib/media');
 const ui = require('../lib/ui');
 const {
   parseColor,
   colorToHex,
   memberVars,
-  renderTemplate,
   ok,
   fail,
   info,
+  success,
+  failure,
   fetchMessageFromLink,
   truncate,
   probeImage,
@@ -70,10 +72,10 @@ function current(session) {
   return session.data.embeds[0];
 }
 
-function builderView(session, member) {
+async function builderView(session, member) {
   const def = session.target ? targets.get(session.target.kind) : null;
   const vars = memberVars(member, member.guild, def?.vars?.(member, session.target.id) || {});
-  const rendered = renderTemplate(session.data, vars);
+  const rendered = await renderMessage(session.data, vars);
   const embeds = rendered.embeds.length
     ? rendered.embeds
     : [info('*Embed vide — utilisez le menu ci-dessous pour ajouter un titre, une description, une image…*').toJSON()];
@@ -90,7 +92,10 @@ function builderView(session, member) {
     header.push(`⚠️ **Salon introuvable :** ${missing.map((n) => `\`{salon:${n}}\``).join(', ')} — mettez un mot présent dans le nom du salon (ex : \`{salon:reglement}\`), ou sa mention \`<#id>\`.`);
   }
   const img = session.imageInfo;
-  if (img && img.url === current(session).image?.url && img.width < 1000) {
+  const forcedWidth = current(session).image?.width;
+  if (forcedWidth) {
+    header.push(`📏 **Largeur forcée : ${forcedWidth} px**${current(session).image?.url ? '' : ' *(sans bannière : image transparente)*'}${hasSharp() || !current(session).image?.url ? '' : ' — ⚠️ module `sharp` non installé (`npm install`)'}`);
+  } else if (img && img.url === current(session).image?.url && img.width < 1000) {
     header.push(`⚠️ **Bannière trop petite (${img.width}×${img.height} px)** : elle s'affiche en petit et rend l'embed étroit. Utilisez une image d'au moins **1200 px de large** (idéal : 1200×400).`);
   }
 
@@ -105,6 +110,7 @@ function builderView(session, member) {
       { label: 'Auteur', value: 'author', emoji: '👤', description: 'Petit texte + icône en haut' },
       { label: 'Pied de page', value: 'footer', emoji: '🔻', description: 'Petit texte + icône en bas' },
       { label: 'Image & miniature', value: 'images', emoji: '🖼️', description: 'Bannière en bas / petite image à droite' },
+      { label: 'Largeur de l\'embed', value: 'width', emoji: '📏', description: e.image?.width ? `${e.image.width} px` : 'Automatique (selon la bannière)' },
       { label: 'Ajouter un champ', value: 'field_add', emoji: '➕', description: `${e.fields?.length || 0}/25 champs` },
       { label: 'Modifier / supprimer des champs', value: 'field_remove', emoji: '➖' },
       { label: e.timestamp ? 'Retirer l\'horodatage' : 'Ajouter l\'horodatage', value: 'timestamp', emoji: '🕒' },
@@ -140,7 +146,19 @@ function builderView(session, member) {
   rows.push(buttons);
   if (!def && session.fromHub) rows.push(ui.row(ui.backButton('emb:home', 'Liste des embeds')));
 
-  return { content: header.join('\n'), embeds, components: rows, allowedMentions: { parse: [] } };
+  return { content: header.join('\n'), embeds, files: rendered.files, attachments: [], components: rows, allowedMentions: { parse: [] } };
+}
+
+// Met à jour l'éditeur (préparer la bannière peut prendre une seconde, d'où le deferUpdate).
+async function show(interaction, session) {
+  if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate();
+  const e = current(session);
+  const imageUrl = e.image?.url;
+  if (imageUrl && !imageUrl.includes('{') && !e.image.width && session.imageInfo?.url !== imageUrl) {
+    const size = await probeImage(imageUrl);
+    session.imageInfo = size ? { url: imageUrl, ...size } : null;
+  }
+  return interaction.editReply(await builderView(session, interaction.member));
 }
 
 async function openBuilder(interaction, kind, id) {
@@ -149,14 +167,7 @@ async function openBuilder(interaction, kind, id) {
   if (!data.embeds?.length) data.embeds = [{}];
   const session = { guildId: interaction.guildId, data, target: { kind, id } };
   sessions.set(interaction.user.id, session);
-  const imageUrl = data.embeds[0]?.image?.url;
-  if (imageUrl && !imageUrl.includes('{')) {
-    await interaction.deferUpdate();
-    const size = await probeImage(imageUrl);
-    session.imageInfo = size ? { url: imageUrl, ...size } : null;
-    return interaction.editReply(builderView(session, interaction.member));
-  }
-  return interaction.update(builderView(session, interaction.member));
+  return show(interaction, session);
 }
 
 function input(id, label, value, { style = TextInputStyle.Short, required = false, max, placeholder } = {}) {
@@ -203,6 +214,11 @@ function buildModal(kind, session) {
       return modal.setTitle('Images').addComponents(
         input('image', 'Grande image (URL)', e.image?.url, { placeholder: 'https://… .png / .gif' }),
         input('thumbnail', 'Miniature à droite (URL)', e.thumbnail?.url, { placeholder: '{user.avatar}' }),
+        input('width', 'Largeur de l\'embed en px (vide = auto)', e.image?.width, { placeholder: '300 = étroit · 450 = moyen · 1200 = le plus large', max: 4 }),
+      );
+    case 'width':
+      return modal.setTitle('Largeur de l\'embed').addComponents(
+        input('width', 'Largeur en pixels (vide = automatique)', e.image?.width, { placeholder: '300 = étroit · 450 = moyen · 1200 = le plus large', max: 4 }),
       );
     case 'field_add':
       return modal.setTitle('Ajouter un champ').addComponents(
@@ -274,11 +290,21 @@ function applyModal(kind, session, fields) {
       if (!e.footer.text) delete e.footer;
       break;
     case 'images':
-      if (get('image')) e.image = { url: get('image') };
+    case 'width': {
+      const raw = get('width');
+      const width = raw ? Math.round(Number(raw)) : null;
+      if (raw && (!Number.isFinite(width) || width < 100 || width > 2000)) return 'Largeur invalide : un nombre entre 100 et 2000 (ou vide pour automatique).';
+      const image = { url: kind === 'images' ? get('image') : e.image?.url };
+      if (!image.url) delete image.url;
+      if (width) image.width = width;
+      if (Object.keys(image).length) e.image = image;
       else delete e.image;
-      if (get('thumbnail')) e.thumbnail = { url: get('thumbnail') };
-      else delete e.thumbnail;
+      if (kind === 'images') {
+        if (get('thumbnail')) e.thumbnail = { url: get('thumbnail') };
+        else delete e.thumbnail;
+      }
       break;
+    }
     case 'field_add':
       e.fields = e.fields || [];
       if (e.fields.length >= 25) return 'Maximum 25 champs.';
@@ -426,7 +452,7 @@ const components = {
       if (action === 'new') {
         const session = { guildId: guild.id, data: emptyData(), fromHub: true };
         sessions.set(interaction.user.id, session);
-        return interaction.update(builderView(session, interaction.member));
+        return show(interaction, session);
       }
       if (action === 'editmsg') {
         return interaction.showModal(
@@ -445,7 +471,7 @@ const components = {
         fromHub: true,
       };
       sessions.set(interaction.user.id, session);
-      return interaction.update(builderView(session, interaction.member));
+      return show(interaction, session);
     }
 
     const session = getSession(interaction);
@@ -458,7 +484,7 @@ const components = {
         const e = current(session);
         if (e.timestamp) delete e.timestamp;
         else e.timestamp = true;
-        return interaction.update(builderView(session, interaction.member));
+        return show(interaction, session);
       }
       return interaction.showModal(buildModal(choice, session));
     }
@@ -469,50 +495,46 @@ const components = {
         db.guild(guild.id).embeds[name] = structuredClone(session.data);
         db.save(guild.id);
         session.name = name;
-        await interaction.update(builderView(session, interaction.member));
+        await show(interaction, session);
         return ok(interaction, `Modèle \`${name}\` sauvegardé.`);
       }
       const error = applyModal(kind, session, interaction.fields);
       if (error) return fail(interaction, error);
-      const imageUrl = current(session).image?.url;
-      if (imageUrl && !imageUrl.includes('{') && session.imageInfo?.url !== imageUrl) {
-        await interaction.deferUpdate();
-        const size = await probeImage(imageUrl);
-        session.imageInfo = size ? { url: imageUrl, ...size } : null;
-        return interaction.editReply(builderView(session, interaction.member));
-      }
-      return interaction.update(builderView(session, interaction.member));
+      return show(interaction, session);
     }
 
     if (action === 'commit' || action === 'cancel') {
       if (!def) return expired(interaction);
+      await interaction.deferUpdate();
       if (action === 'commit') await def.save(guild, session.target.id, structuredClone(session.data));
       sessions.delete(interaction.user.id);
-      await interaction.update({ content: '', ...(await def.back(guild, session.target.id, interaction.member)) });
+      await interaction.editReply({ content: '', files: [], attachments: [], ...(await def.back(guild, session.target.id, interaction.member)) });
       if (action === 'commit') return ok(interaction, 'Message enregistré !');
       return;
     }
 
     if (action === 'send') {
+      await interaction.deferUpdate();
       const channel = guild.channels.cache.get(interaction.values[0]);
-      const payload = renderTemplate(session.data, memberVars(interaction.member, guild));
+      const payload = await renderMessage(session.data, memberVars(interaction.member, guild));
       if (!payload.content && !payload.embeds.length) return fail(interaction, 'Le message est vide.');
       if (!channel?.permissionsFor(interaction.client.user)?.has(['SendMessages', 'EmbedLinks'])) {
         return fail(interaction, `Je n'ai pas la permission d'écrire dans ${channel}.`);
       }
       const sent = await channel.send(payload);
-      await interaction.update(builderView(session, interaction.member));
+      await show(interaction, session);
       return ok(interaction, `Message envoyé : ${sent.url}`);
     }
 
     if (action === 'apply') {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const target = session.editTarget;
       const channel = await guild.channels.fetch(target.channelId).catch(() => null);
       const message = await channel?.messages.fetch(target.messageId).catch(() => null);
-      if (!message) return fail(interaction, 'Le message d\'origine n\'existe plus.');
-      const payload = renderTemplate(session.data, memberVars(interaction.member, guild));
-      await message.edit({ content: payload.content || null, embeds: payload.embeds });
-      return ok(interaction, `Message modifié : ${message.url}`);
+      if (!message) return interaction.editReply({ embeds: [failure('Le message d\'origine n\'existe plus.')] });
+      const payload = await renderMessage(session.data, memberVars(interaction.member, guild));
+      await message.edit({ content: payload.content || null, embeds: payload.embeds, files: payload.files, attachments: [] });
+      return interaction.editReply({ embeds: [success(`Message modifié : ${message.url}`)] });
     }
 
     if (action === 'save') return interaction.showModal(buildModal('save', session));
@@ -536,7 +558,7 @@ const components = {
 
     if (action === 'reset') {
       session.data = emptyData();
-      return interaction.update(builderView(session, interaction.member));
+      return show(interaction, session);
     }
   },
 };

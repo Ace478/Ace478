@@ -141,7 +141,9 @@ function cleanEmbed(raw) {
     out.footer = { text: String(e.footer.text).slice(0, 2048) };
     if (isUrl(e.footer.icon_url)) out.footer.icon_url = e.footer.icon_url;
   }
-  if (isUrl(e.image?.url)) out.image = { url: fullSizeImage(e.image.url) };
+  const isAttachment = (v) => typeof v === 'string' && /^attachment:\/\/[\w.-]+$/.test(v);
+  if (isAttachment(e.image?.url)) out.image = { url: e.image.url };
+  else if (isUrl(e.image?.url)) out.image = { url: fullSizeImage(e.image.url) };
   if (isUrl(e.thumbnail?.url)) out.thumbnail = { url: fullSizeImage(e.thumbnail.url) };
   if (Array.isArray(e.fields)) {
     out.fields = e.fields
@@ -304,6 +306,8 @@ module.exports = {
   memberVars,
   applyVars,
   renderTemplate,
+  deepVars,
+  fullSizeImage,
   cleanEmbed,
   embedIsEmpty,
   isUrl,

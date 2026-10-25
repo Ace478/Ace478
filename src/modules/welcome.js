@@ -5,7 +5,8 @@ const db = require('../lib/db');
 const ui = require('../lib/ui');
 const { canUse } = require('../lib/access');
 const { registerTarget, openBuilder } = require('./embeds');
-const { renderTemplate, memberVars, fail, info } = require('../lib/utils');
+const { memberVars, fail, info } = require('../lib/utils');
+const { renderMessage } = require('../lib/media');
 
 const DEFAULTS = {
   welcome: {
@@ -47,14 +48,14 @@ function messageOf(data, type) {
 }
 
 function buildMessage(data, type, member) {
-  return renderTemplate(messageOf(data, type), memberVars(member, member.guild));
+  return renderMessage(messageOf(data, type), memberVars(member, member.guild));
 }
 
 async function sendWelcome(member, type) {
   const data = db.guild(member.guild.id);
   const cfg = data[type];
   if (!cfg.enabled) return;
-  const payload = { ...buildMessage(data, type, member), allowedMentions: { users: [member.id] } };
+  const payload = { ...(await buildMessage(data, type, member)), allowedMentions: { users: [member.id] } };
   if (cfg.channelId) {
     const channel = member.guild.channels.cache.get(cfg.channelId);
     if (channel?.isTextBased()) await channel.send(payload).catch((err) => console.error('[bienvenue]', err.message));
@@ -169,7 +170,8 @@ const components = {
     if (action === 'edit') return openBuilder(interaction, key, null);
 
     if (action === 'test') {
-      return interaction.reply({ ...buildMessage(data, key, interaction.member), flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      return interaction.editReply({ ...(await buildMessage(data, key, interaction.member)), allowedMentions: { parse: [] } });
     }
 
     db.save(guild.id);

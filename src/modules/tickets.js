@@ -26,7 +26,8 @@ const { canUse } = require('../lib/access');
 const { sendLog } = require('../lib/logger');
 const { createTranscript } = require('../lib/transcript');
 const { registerTarget, openBuilder } = require('./embeds');
-const { renderTemplate, memberVars, applyVars, isValidEmoji, EMOJI_ERROR, baseEmbed, fail, info, isAdmin, ts, truncate } = require('../lib/utils');
+const { renderMessage } = require('../lib/media');
+const { memberVars, applyVars, isValidEmoji, EMOJI_ERROR, baseEmbed, fail, info, isAdmin, ts, truncate } = require('../lib/utils');
 
 const TRANSCRIPT_DIR = path.join(db.DATA_DIR, 'transcripts');
 
@@ -300,7 +301,7 @@ function panelComponents(guildId, placeholder) {
 
 async function sendPanel(guild, channel) {
   const t = store(guild.id);
-  const msg = await channel.send({ ...renderTemplate(messageOf(guild.id, 'panel'), memberVars(null, guild)), components: panelComponents(guild.id) });
+  const msg = await channel.send({ ...(await renderMessage(messageOf(guild.id, 'panel'), memberVars(null, guild))), components: panelComponents(guild.id) });
   t.panels = t.panels || [];
   t.panels.push({ channelId: channel.id, messageId: msg.id });
   db.save(guild.id);
@@ -311,7 +312,7 @@ async function sendPanel(guild, channel) {
 async function refreshPanels(guild, { appearance = false } = {}) {
   const t = store(guild.id);
   if (!t.categories.length || !t.panels?.length) return;
-  const look = appearance ? renderTemplate(messageOf(guild.id, 'panel'), memberVars(null, guild)) : {};
+  const look = appearance ? await renderMessage(messageOf(guild.id, 'panel'), memberVars(null, guild)) : {};
   for (const panel of [...t.panels]) {
     const channel = await guild.channels.fetch(panel.channelId).catch(() => null);
     const msg = await channel?.messages.fetch(panel.messageId).catch(() => null);
@@ -320,7 +321,7 @@ async function refreshPanels(guild, { appearance = false } = {}) {
       continue;
     }
     const payload = { components: panelComponents(guild.id, panel.placeholder) };
-    if (appearance) Object.assign(payload, { content: look.content || null, embeds: look.embeds });
+    if (appearance) Object.assign(payload, { content: look.content || null, embeds: look.embeds, files: look.files, attachments: [] });
     await msg.edit(payload).catch(() => null);
   }
   db.save(guild.id);
@@ -366,12 +367,12 @@ async function createTicketChannel(guild, record) {
   record.openedAt = Date.now();
 
   const staffId = record.acceptedBy;
-  const rendered = renderTemplate(openMessageOf(guild.id, cat), ticketVars(guild, record, member, { staff: staffId ? `<@${staffId}>` : '—' }));
+  const rendered = await renderMessage(openMessageOf(guild.id, cat), ticketVars(guild, record, member, { staff: staffId ? `<@${staffId}>` : '—' }));
   const ping = [`<@${member.id}>`];
   if (t.config.pingStaff) ping.push(...staffRoles(guild.id, cat).map((id) => `<@&${id}>`));
   const content = [ping.join(' '), rendered.content].filter(Boolean).join('\n');
 
-  const control = await channel.send({ content, embeds: [...rendered.embeds.slice(0, 9), infoEmbed(guild, record)], components: [controlRow(record)] });
+  const control = await channel.send({ content, embeds: [...rendered.embeds.slice(0, 9), infoEmbed(guild, record)], components: [controlRow(record)], files: rendered.files });
   record.controlMessageId = control.id;
   await control.pin().catch(() => null);
   db.save(guild.id);
@@ -466,8 +467,8 @@ async function closeTicket(guild, record, closer, reason) {
 
   if (user && t.config.dmTranscript) {
     const member = await guild.members.fetch(user.id).catch(() => null);
-    const payload = renderTemplate(messageOf(guild.id, 'dmClose'), ticketVars(guild, record, member || user, { staff: `<@${closer.id}>`, raison: reason || 'Aucune raison précisée' }));
-    await dm(user, { ...payload, files: [new AttachmentBuilder(Buffer.from(html), { name: fileName })] });
+    const payload = await renderMessage(messageOf(guild.id, 'dmClose'), ticketVars(guild, record, member || user, { staff: `<@${closer.id}>`, raison: reason || 'Aucune raison précisée' }));
+    await dm(user, { ...payload, files: [...payload.files, new AttachmentBuilder(Buffer.from(html), { name: fileName })] });
   }
 
   await channel.send({
@@ -1135,7 +1136,7 @@ const components = {
         components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('Aller au ticket').setStyle(ButtonStyle.Link).setURL(channel.url))],
       });
       const member = await guild.members.fetch(record.userId).catch(() => null);
-      const payload = renderTemplate(messageOf(guild.id, 'dmAccept'), ticketVars(guild, record, member, { staff: `${interaction.user}` }));
+      const payload = await renderMessage(messageOf(guild.id, 'dmAccept'), ticketVars(guild, record, member, { staff: `${interaction.user}` }));
       const sent =
         member &&
         (await dm(member.user, {
@@ -1161,7 +1162,7 @@ const components = {
       });
       const member = await guild.members.fetch(record.userId).catch(() => null);
       if (member) {
-        await dm(member.user, renderTemplate(messageOf(guild.id, 'dmDeny'), ticketVars(guild, record, member, { staff: `${interaction.user}`, raison: reason || 'Aucune raison précisée' })));
+        await dm(member.user, await renderMessage(messageOf(guild.id, 'dmDeny'), ticketVars(guild, record, member, { staff: `${interaction.user}`, raison: reason || 'Aucune raison précisée' })));
       }
       await sendLog(guild, 'tickets', summaryEmbed(guild, record, '⛔ Demande refusée').setDescription(`Par ${interaction.user}${reason ? `\n**Raison :** ${reason}` : ''}`));
       return;

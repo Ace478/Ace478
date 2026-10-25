@@ -13,7 +13,8 @@ const db = require('../lib/db');
 const ui = require('../lib/ui');
 const { canUse } = require('../lib/access');
 const { registerTarget, openBuilder } = require('./embeds');
-const { renderTemplate, memberVars, isValidEmoji, fail, info, truncate } = require('../lib/utils');
+const { renderMessage } = require('../lib/media');
+const { memberVars, isValidEmoji, fail, info, truncate } = require('../lib/utils');
 
 const DEFAULT_TEMPLATE = {
   embeds: [{ color: 0x3b82f6, title: '🎭 Choisissez vos rôles', description: 'Cliquez ci-dessous pour ajouter ou retirer un rôle.' }],
@@ -138,8 +139,8 @@ registerTarget('rolemenu', {
     menu.message = data;
     db.save(guild.id);
     const message = await fetchMenuMessage(guild, msgId);
-    const payload = renderTemplate(data, memberVars(null, guild));
-    await message?.edit({ content: payload.content || null, embeds: payload.embeds }).catch(() => null);
+    const payload = await renderMessage(data, memberVars(null, guild));
+    await message?.edit({ content: payload.content || null, embeds: payload.embeds, files: payload.files, attachments: [] }).catch(() => null);
   },
   title: () => 'apparence du menu de rôles',
   back: (guild, msgId) => (db.guild(guild.id).roleMenus[msgId] ? menuView(guild, msgId) : homeView(guild)),
@@ -171,7 +172,7 @@ const configComponents = {
       if (!channel.permissionsFor(guild.members.me)?.has(['ViewChannel', 'SendMessages', 'EmbedLinks'])) {
         return fail(interaction, `Je n'ai pas la permission d'écrire dans ${channel}.`);
       }
-      const msg = await channel.send(renderTemplate(DEFAULT_TEMPLATE, memberVars(null, guild)));
+      const msg = await channel.send(await renderMessage(DEFAULT_TEMPLATE, memberVars(null, guild)));
       data.roleMenus[msg.id] = { channelId: channel.id, type: 'buttons', roles: [], message: structuredClone(DEFAULT_TEMPLATE) };
       db.save(guild.id);
       return interaction.update(menuView(guild, msg.id));

@@ -9,10 +9,13 @@
     "check": "node --check src/index.js && node src/check.js"
   },
   "engines": {
-    "node": ">=18.17"
+    "node": ">=20.9"
   },
   "dependencies": {
     "discord.js": "^14.27.0",
     "dotenv": "^16.4.5"
+  },
+  "optionalDependencies": {
+    "sharp": "^0.35.5"
   }
 }
