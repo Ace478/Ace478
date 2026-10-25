@@ -28,6 +28,8 @@ const {
   info,
   fetchMessageFromLink,
   truncate,
+  probeImage,
+  channelMention,
 } = require('../lib/utils');
 
 const sessions = new Map(); // userId -> { guildId, data, target, editTarget, name, fromHub }
@@ -79,6 +81,18 @@ function builderView(session, member) {
   const title = def ? def.title(member.guild, session.target.id) : session.name ? `modèle \`${session.name}\`` : session.editTarget ? 'modification d\'un message existant' : 'nouvel embed';
   const header = [`🎨 **Éditeur** — ${title}`, '-# Aperçu ci-dessous. Modifiez avec le menu, puis enregistrez.'];
   if (session.data.content) header.push(`**Texte au-dessus de l'embed :**\n>>> ${truncate(rendered.content, 1500)}`);
+
+  // Contrôles automatiques : salons introuvables, bannière trop petite
+  const missing = [...new Set([...JSON.stringify(session.data).matchAll(/\{salon:([^}]+)\}/gi)].map((m) => m[1].trim()))].filter(
+    (name) => !channelMention(member.guild, name),
+  );
+  if (missing.length) {
+    header.push(`⚠️ **Salon introuvable :** ${missing.map((n) => `\`{salon:${n}}\``).join(', ')} — mettez un mot présent dans le nom du salon (ex : \`{salon:reglement}\`), ou sa mention \`<#id>\`.`);
+  }
+  const img = session.imageInfo;
+  if (img && img.url === current(session).image?.url && img.width < 1000) {
+    header.push(`⚠️ **Bannière trop petite (${img.width}×${img.height} px)** : elle s'affiche en petit et rend l'embed étroit. Utilisez une image d'au moins **1200 px de large** (idéal : 1200×400).`);
+  }
 
   const e = current(session);
   const menu = new StringSelectMenuBuilder()
@@ -135,6 +149,13 @@ async function openBuilder(interaction, kind, id) {
   if (!data.embeds?.length) data.embeds = [{}];
   const session = { guildId: interaction.guildId, data, target: { kind, id } };
   sessions.set(interaction.user.id, session);
+  const imageUrl = data.embeds[0]?.image?.url;
+  if (imageUrl && !imageUrl.includes('{')) {
+    await interaction.deferUpdate();
+    const size = await probeImage(imageUrl);
+    session.imageInfo = size ? { url: imageUrl, ...size } : null;
+    return interaction.editReply(builderView(session, interaction.member));
+  }
   return interaction.update(builderView(session, interaction.member));
 }
 
@@ -453,6 +474,13 @@ const components = {
       }
       const error = applyModal(kind, session, interaction.fields);
       if (error) return fail(interaction, error);
+      const imageUrl = current(session).image?.url;
+      if (imageUrl && !imageUrl.includes('{') && session.imageInfo?.url !== imageUrl) {
+        await interaction.deferUpdate();
+        const size = await probeImage(imageUrl);
+        session.imageInfo = size ? { url: imageUrl, ...size } : null;
+        return interaction.editReply(builderView(session, interaction.member));
+      }
       return interaction.update(builderView(session, interaction.member));
     }
 
