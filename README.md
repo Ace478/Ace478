@@ -84,7 +84,8 @@ Variables utilisables dans les messages de tickets : `{numero}`, `{categorie}`, 
 
 Il s'ouvre depuis tous les panneaux (bouton 🎨) ou avec `/embed`. Il affiche un **aperçu en direct** :
 
-- menu **« Que voulez-vous modifier ? »** : titre, description, couleur, auteur, pied de page, image (bannière) et miniature, champs, horodatage, texte au-dessus, import JSON (Discohook) ;
+- menu **« Que voulez-vous modifier ? »** : titre, description, couleur, auteur, pied de page, image (bannière) et miniature, **📏 largeur de l'embed**, champs, horodatage, texte au-dessus, import JSON (Discohook) ;
+- **📏 Largeur** : sur Discord, la largeur d'un embed dépend de la taille de la bannière. Le bot redimensionne donc la bannière à la largeur choisie (ex. `1200` = embed le plus large). Sans bannière, il ajoute une image invisible pour élargir l'embed ;
 - **💾 Enregistrer** applique le message, **↩️ Annuler** revient au panneau.
 
 Mise en forme dans la description : `## Titre`, `> citation`, `**gras**`, `-# petit texte`, emojis perso `<:nom:id>` (tapez `\:emoji:` sur Discord pour obtenir le code). Pour une image : clic droit sur l'image dans Discord → *Copier le lien*.
@@ -111,7 +112,14 @@ Par défaut, chaque commande demande la permission Discord habituelle (ex. *Bann
 
 - `/bienvenue` : salons, activer / désactiver, **🎨 personnaliser**, **🧪 tester**, rôles automatiques.
 - `/roles` : créez un menu dans un salon, choisissez les rôles, puis modifiez les textes, les emojis et l'apparence.
-- `/logs` : un salon par type, ou tout dans le même salon.
+- `/logs` : un salon par type, ou tout dans le même salon. Les logs sont détaillés :
+  - **messages** : contenu, pièces jointes (avec aperçu), qui a supprimé, suppressions en masse (fichier .txt) ;
+  - **membres** : âge du compte (⚠️ compte récent), **invitation utilisée et qui l'a créée**, durée passée sur le serveur, rôles, pseudos, boosts ;
+  - **modération** : ban / kick / mute faits par le bot *ou* directement dans Discord, avec l'auteur et la raison ;
+  - **vocal** : connexions, **temps passé**, déplacements (et par qui), stream, caméra, mute serveur ;
+  - **serveur** : salons, rôles et **permissions** (avant → après), emojis, invitations, paramètres du serveur.
+
+  Le bot retrouve « qui a fait l'action » grâce au journal d'audit : il lui faut la permission **Voir les logs du serveur** (incluse dans Administrateur).
 - `/config` → **Suggestions** : salon des suggestions (`/suggestion`).
 
 ---

@@ -18,8 +18,10 @@ const client = new Client({
     GatewayIntentBits.MessageContent, // intent privilégié : à activer dans le Developer Portal
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildModeration,
+    GatewayIntentBits.GuildInvites,
+    GatewayIntentBits.GuildExpressions,
   ],
-  partials: [Partials.Message, Partials.Channel, Partials.GuildMember],
+  partials: [Partials.Message, Partials.Channel, Partials.GuildMember, Partials.User],
 });
 
 const commands = new Map();

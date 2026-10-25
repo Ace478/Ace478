@@ -2,12 +2,12 @@
 const db = require('./db');
 
 const LOG_TYPES = {
-  moderation: 'Modération (ban, kick, mute, warn…)',
-  messages: 'Messages (supprimés / modifiés)',
-  members: 'Membres (arrivées, départs, rôles, pseudos)',
-  voice: 'Vocal (connexions, déconnexions, déplacements)',
+  moderation: 'Modération (ban, kick, mute, warn, clear)',
+  messages: 'Messages (supprimés, modifiés, suppressions en masse)',
+  members: 'Membres (arrivées + invitation, départs, rôles, pseudos, boosts)',
+  voice: 'Vocal (connexions, temps passé, déplacements, stream, caméra)',
   tickets: 'Tickets (ouvertures, fermetures, transcripts)',
-  server: 'Serveur (salons et rôles créés / supprimés)',
+  server: 'Serveur (salons, rôles, permissions, emojis, invitations)',
 };
 
 async function sendLog(guild, type, payload) {
