@@ -16,7 +16,11 @@ const {
   ChannelType,
   AttachmentBuilder,
   MessageFlags,
+  ChannelSelectMenuBuilder,
+  RoleSelectMenuBuilder,
+  SnowflakeUtil,
 } = require('discord.js');
+const { canUse } = require('../lib/access');
 const db = require('../lib/db');
 const { sendLog } = require('../lib/logger');
 const { createTranscript } = require('../lib/transcript');
@@ -55,6 +59,12 @@ function isStaff(member, cat) {
   return staffRoles(member.guild.id, cat).some((id) => member.roles.cache.has(id));
 }
 
+// Questions du formulaire (5 max). Compatible avec l'ancien champ "question".
+function questionsOf(cat) {
+  if (Array.isArray(cat?.questions)) return cat.questions.slice(0, 5);
+  return cat?.question ? [cat.question] : [];
+}
+
 function pad(n) {
   return String(n).padStart(4, '0');
 }
@@ -91,6 +101,7 @@ function summaryEmbed(guild, record, title) {
       { name: 'Créé', value: ts(record.createdAt, 'R'), inline: true },
     );
   if (record.claimedBy) embed.addFields({ name: 'Pris en charge par', value: `<@${record.claimedBy}>`, inline: true });
+  for (const { q, a } of record.answers || []) embed.addFields({ name: truncate(q, 256), value: truncate(a, 1024) || '—' });
   if (record.answer) embed.addFields({ name: cat?.question || 'Détails', value: truncate(record.answer, 1024) });
   return embed;
 }
@@ -156,7 +167,7 @@ function panelComponents(guildId, placeholder) {
   const cats = store(guildId).categories;
   const menu = new StringSelectMenuBuilder()
     .setCustomId('tk:open')
-    .setPlaceholder(placeholder || 'Choisissez la raison de votre ticket')
+    .setPlaceholder(placeholder || store(guildId).config.placeholder || 'Choisissez la raison de votre ticket')
     .addOptions(
       cats.slice(0, 25).map((c) => ({
         label: c.label,
@@ -179,7 +190,7 @@ async function refreshPanels(guild) {
       t.panels = t.panels.filter((p) => p !== panel);
       continue;
     }
-    await msg.edit({ components: panelComponents(guild.id, panel.placeholder) }).catch(() => null);
+    await msg.edit({ components: panelComponents(guild.id, panel.placeholder || t.config.placeholder) }).catch(() => null);
   }
   db.save(guild.id);
 }
@@ -237,7 +248,7 @@ async function createTicketChannel(guild, record) {
   return channel;
 }
 
-async function submitTicket(interaction, cat, answer) {
+async function submitTicket(interaction, cat, answers) {
   const guild = interaction.guild;
   const t = store(guild.id);
 
@@ -246,7 +257,7 @@ async function submitTicket(interaction, cat, answer) {
     userId: interaction.user.id,
     categoryId: cat.id,
     categoryLabel: cat.label,
-    answer: answer || null,
+    answers: answers || [],
     status: 'pending',
     createdAt: Date.now(),
   };
@@ -381,155 +392,472 @@ async function setPaused(guild, record, by, paused) {
 
 // ---------- Commandes ----------
 
+// ---------- Tableau de bord de configuration (/ticket-config) ----------
+
+function canConfigure(member) {
+  return canUse(member, 'ticket-config', PermissionFlagsBits.ManageGuild);
+}
+
+function newId() {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+}
+
+function reasonLine(guildId, cat) {
+  const parts = [`${cat.emoji || '•'} **${cat.label}**`, cat.approval !== false ? '✅ validation staff' : '⚡ ouverture directe'];
+  const qs = questionsOf(cat);
+  if (qs.length) parts.push(`❓ ${qs.length} question(s)`);
+  if (cat.staffRoleIds?.length) parts.push(cat.staffRoleIds.map((id) => `<@&${id}>`).join(' '));
+  if (cat.parentId) parts.push(`📁 <#${cat.parentId}>`);
+  return parts.join(' • ');
+}
+
+function backButton(target = 'home', label = 'Retour') {
+  return new ButtonBuilder().setCustomId(`tks:${target}`).setLabel(label).setEmoji('↩️').setStyle(ButtonStyle.Secondary);
+}
+
+function channelSelect(id, placeholder, types, current) {
+  const menu = new ChannelSelectMenuBuilder().setCustomId(id).setPlaceholder(placeholder).setChannelTypes(...types).setMinValues(0).setMaxValues(1);
+  if (current) menu.setDefaultChannels(current);
+  return new ActionRowBuilder().addComponents(menu);
+}
+
+function roleSelect(id, placeholder, current) {
+  const menu = new RoleSelectMenuBuilder().setCustomId(id).setPlaceholder(placeholder).setMinValues(0).setMaxValues(10);
+  if (current?.length) menu.setDefaultRoles(...current);
+  return new ActionRowBuilder().addComponents(menu);
+}
+
+function homeView(guild) {
+  const t = store(guild.id);
+  const c = t.config;
+  const logs = db.guild(guild.id).logs.tickets;
+  const step = (done) => (done ? '✅' : '⬜');
+  const embed = info(
+    [
+      '**Configurez tout depuis ce panneau** (visible par vous seul) :',
+      `${step(c.staffRoleIds.length)} **1.** Choisissez les rôles staff et les salons avec les menus ci-dessous`,
+      `${step(t.categories.length)} **2.** Ajoutez vos raisons de ticket avec **Raisons**`,
+      `${step(t.panels?.length)} **3.** Envoyez le panel avec **Envoyer le panel**`,
+      '',
+      `📨 **Salon des demandes :** ${c.requestChannelId ? `<#${c.requestChannelId}>` : '*aucun → les tickets s\'ouvrent directement*'}`,
+      `📁 **Catégorie des tickets :** ${c.parentId ? `<#${c.parentId}>` : '*aucune*'}`,
+      `📜 **Logs & transcripts :** ${logs ? `<#${logs}>` : '*aucun*'}`,
+      `🛡️ **Rôles staff :** ${c.staffRoleIds.map((id) => `<@&${id}>`).join(' ') || '*aucun (owners/admins seulement)*'}`,
+      '',
+      `**Raisons (${t.categories.length}/25)**`,
+      t.categories.map((cat) => reasonLine(guild.id, cat)).join('\n') || '*Aucune pour le moment.*',
+    ].join('\n'),
+  ).setTitle('🎫 Configuration des tickets');
+
+  return {
+    embeds: [embed],
+    components: [
+      channelSelect('tks:set:request', '📨 Salon des demandes staff (vide = ouverture directe)', [ChannelType.GuildText], c.requestChannelId),
+      channelSelect('tks:set:parent', '📁 Catégorie où créer les tickets', [ChannelType.GuildCategory], c.parentId),
+      channelSelect('tks:set:logs', '📜 Salon des logs et transcripts', [ChannelType.GuildText], logs),
+      roleSelect('tks:set:staff', '🛡️ Rôles staff (accès à tous les tickets)', c.staffRoleIds),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('tks:reasons').setLabel(`Raisons (${t.categories.length})`).setEmoji('📋').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('tks:options').setLabel('Options').setEmoji('⚙️').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('tks:send').setLabel('Envoyer le panel').setEmoji('📤').setStyle(ButtonStyle.Success).setDisabled(!t.categories.length),
+      ),
+    ],
+  };
+}
+
+function optionsView(guild) {
+  const c = store(guild.id).config;
+  const onOff = (v) => (v ? '🟢 activé' : '🔴 désactivé');
+  const embed = info(
+    [
+      `**Tickets max par membre :** ${c.maxOpen}`,
+      `**Nom des salons :** \`${c.nameFormat}\` *(variables : {numero} {user} {categorie})*`,
+      `**Texte du menu déroulant :** ${c.placeholder || 'Choisissez la raison de votre ticket'}`,
+      `**Fermeture auto. après inactivité :** ${c.autoCloseHours ? `${c.autoCloseHours} h` : 'désactivée'}`,
+      '',
+      `**Transcript en MP à la fermeture :** ${onOff(c.dmTranscript)}`,
+      `**Mentionner le staff :** ${onOff(c.pingStaff)}`,
+      `**Le membre peut fermer son ticket :** ${onOff(c.userCanClose !== false)}`,
+    ].join('\n'),
+  ).setTitle('⚙️ Options des tickets');
+  const toggle = (key, label, value) =>
+    new ButtonBuilder()
+      .setCustomId(`tks:toggle:${key}`)
+      .setLabel(label)
+      .setStyle(value ? ButtonStyle.Success : ButtonStyle.Secondary)
+      .setEmoji(value ? '✅' : '✖️');
+  return {
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder().addComponents(
+        toggle('dmTranscript', 'Transcript en MP', c.dmTranscript),
+        toggle('pingStaff', 'Mention staff', c.pingStaff),
+        toggle('userCanClose', 'Fermeture par le membre', c.userCanClose !== false),
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('tks:modal:options').setLabel('Modifier les réglages').setEmoji('✏️').setStyle(ButtonStyle.Primary),
+        backButton(),
+      ),
+    ],
+  };
+}
+
+function reasonsView(guild) {
+  const t = store(guild.id);
+  const embed = info(
+    [
+      'Chaque **raison** est une option du menu déroulant du panel.',
+      'Sélectionnez-en une pour la modifier (textes, questions, rôles, catégorie, validation…).',
+      '',
+      t.categories.map((cat, i) => `\`${i + 1}.\` ${reasonLine(guild.id, cat)}`).join('\n') || '*Aucune raison. Cliquez sur **Ajouter une raison**.*',
+    ].join('\n'),
+  ).setTitle(`📋 Raisons de ticket (${t.categories.length}/25)`);
+  const components = [];
+  if (t.categories.length) {
+    components.push(
+      new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId('tks:pick')
+          .setPlaceholder('✏️ Choisir une raison à modifier')
+          .addOptions(t.categories.map((cat) => ({ label: cat.label, value: cat.id, emoji: cat.emoji || undefined, description: cat.description ? truncate(cat.description, 100) : undefined }))),
+      ),
+    );
+  }
+  components.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('tks:modal:new').setLabel('Ajouter une raison').setEmoji('➕').setStyle(ButtonStyle.Success).setDisabled(t.categories.length >= 25),
+      backButton(),
+    ),
+  );
+  return { embeds: [embed], components };
+}
+
+function reasonView(guild, cat) {
+  const qs = questionsOf(cat);
+  const embed = info(
+    [
+      `**Nom :** ${cat.emoji || ''} ${cat.label}`,
+      `**Description :** ${cat.description || '*aucune*'}`,
+      `**Validation par le staff :** ${cat.approval !== false ? '✅ oui (demande à accepter)' : '⚡ non (ouverture directe)'}`,
+      `**Rôles staff spécifiques :** ${cat.staffRoleIds?.map((id) => `<@&${id}>`).join(' ') || '*aucun (rôles généraux)*'}`,
+      `**Catégorie spécifique :** ${cat.parentId ? `<#${cat.parentId}>` : '*catégorie générale*'}`,
+      '',
+      `**Questions du formulaire (${qs.length}/5) :**`,
+      qs.map((q, i) => `${i + 1}. ${q}`).join('\n') || '*aucune — le ticket s\'ouvre sans formulaire*',
+      '',
+      '**Message d\'accueil dans le ticket :**',
+      `>>> ${cat.welcome || '*message par défaut*'}`,
+    ].join('\n'),
+  ).setTitle(`✏️ Raison : ${cat.label}`);
+  return {
+    embeds: [embed],
+    components: [
+      roleSelect(`tks:rstaff:${cat.id}`, '🛡️ Rôles staff spécifiques à cette raison', cat.staffRoleIds),
+      channelSelect(`tks:rparent:${cat.id}`, '📁 Catégorie spécifique (vide = générale)', [ChannelType.GuildCategory], cat.parentId),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`tks:modal:edit:${cat.id}`).setLabel('Textes').setEmoji('📝').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`tks:modal:questions:${cat.id}`).setLabel('Questions').setEmoji('❓').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(`tks:rapproval:${cat.id}`)
+          .setLabel(cat.approval !== false ? 'Validation : oui' : 'Validation : non')
+          .setEmoji(cat.approval !== false ? '✅' : '⚡')
+          .setStyle(cat.approval !== false ? ButtonStyle.Success : ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`tks:rup:${cat.id}`).setLabel('Monter').setEmoji('⬆️').setStyle(ButtonStyle.Secondary),
+      ),
+      new ActionRowBuilder().addComponents(
+        backButton('reasons', 'Raisons'),
+        new ButtonBuilder().setCustomId(`tks:rdel:${cat.id}`).setLabel('Supprimer').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
+      ),
+    ],
+  };
+}
+
+function sendView(guild, status) {
+  const t = store(guild.id);
+  const templates = Object.keys(db.guild(guild.id).embeds).slice(0, 24);
+  const current = t.config.panelTemplate && db.guild(guild.id).embeds[t.config.panelTemplate] ? t.config.panelTemplate : '';
+  const embed = info(
+    [
+      '**1.** Choisissez l\'apparence du panel : le modèle par défaut (comme l\'exemple), ou un modèle créé avec `/embed creer`.',
+      '**2.** Choisissez le salon : le panel y est envoyé immédiatement.',
+      '',
+      `**Modèle :** ${current ? `\`${current}\`` : 'par défaut'}`,
+      `**Panels actifs :** ${t.panels?.length || 0} (mis à jour automatiquement quand vous modifiez les raisons)`,
+      status ? `\n${status}` : '',
+    ].join('\n'),
+  ).setTitle('📤 Envoyer le panel');
+  return {
+    embeds: [embed],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId('tks:template')
+          .setPlaceholder('🎨 Apparence du panel')
+          .addOptions(
+            { label: 'Modèle par défaut', value: '__default', emoji: '🎫', default: !current },
+            ...templates.map((n) => ({ label: truncate(n, 100), value: n, emoji: '💾', default: n === current })),
+          ),
+      ),
+      channelSelect('tks:sendto', '📤 Envoyer le panel dans…', [ChannelType.GuildText, ChannelType.GuildAnnouncement]),
+      new ActionRowBuilder().addComponents(backButton()),
+    ],
+  };
+}
+
+async function sendPanel(guild, channel, templateName, placeholder) {
+  const t = store(guild.id);
+  const template = (templateName && db.guild(guild.id).embeds[templateName]) || defaultPanel();
+  const msg = await channel.send({ ...renderTemplate(template, memberVars(null, guild)), components: panelComponents(guild.id, placeholder) });
+  t.panels = t.panels || [];
+  t.panels.push({ channelId: channel.id, messageId: msg.id, placeholder: placeholder || null });
+  db.save(guild.id);
+  return msg;
+}
+
+function textModal(id, title, inputs) {
+  return new ModalBuilder()
+    .setCustomId(id)
+    .setTitle(title)
+    .addComponents(
+      inputs.map(({ id: inputId, label, value, style = TextInputStyle.Short, required = false, max, placeholder }) => {
+        const field = new TextInputBuilder().setCustomId(inputId).setLabel(label).setStyle(style).setRequired(required);
+        if (value) field.setValue(String(value).slice(0, max || 4000));
+        if (max) field.setMaxLength(max);
+        if (placeholder) field.setPlaceholder(placeholder);
+        return new ActionRowBuilder().addComponents(field);
+      }),
+    );
+}
+
+function reasonModal(id, cat) {
+  return textModal(id, cat ? 'Modifier la raison' : 'Nouvelle raison', [
+    { id: 'label', label: 'Nom (affiché dans le menu)', value: cat?.label, required: true, max: 100, placeholder: 'Recrutement, Support, Partenariat…' },
+    { id: 'emoji', label: 'Emoji (📩 ou <:nom:id>)', value: cat?.emoji, max: 80 },
+    { id: 'description', label: 'Description (sous l\'option)', value: cat?.description, max: 100 },
+    {
+      id: 'welcome',
+      label: 'Message d\'accueil dans le ticket',
+      value: cat?.welcome,
+      style: TextInputStyle.Paragraph,
+      max: 2000,
+      placeholder: 'Bonjour {user} ! Décrivez votre demande… (vide = message par défaut)',
+    },
+    ...(cat
+      ? []
+      : [
+          {
+            id: 'questions',
+            label: 'Questions du formulaire (1 par ligne, 5 max)',
+            style: TextInputStyle.Paragraph,
+            max: 500,
+            placeholder: 'Quel est votre pseudo en jeu ?\nExpliquez votre problème',
+          },
+        ]),
+  ]);
+}
+
+function parseQuestions(text) {
+  const qs = String(text || '')
+    .split('\n')
+    .map((q) => q.trim())
+    .filter(Boolean);
+  if (qs.length > 5) return { error: 'Maximum 5 questions (limite Discord des formulaires).' };
+  const tooLong = qs.find((q) => q.length > 45);
+  if (tooLong) return { error: `Question trop longue (45 caractères max) : « ${truncate(tooLong, 60)} »` };
+  return { questions: qs };
+}
+
+function applyReasonFields(cat, fields) {
+  const emoji = fields.getTextInputValue('emoji').trim();
+  if (emoji && !isValidEmoji(emoji)) return EMOJI_ERROR;
+  cat.label = fields.getTextInputValue('label').trim();
+  cat.emoji = emoji || null;
+  cat.description = fields.getTextInputValue('description').trim() || null;
+  cat.welcome = fields.getTextInputValue('welcome').trim() || null;
+  return null;
+}
+
 const configCommand = {
   data: new SlashCommandBuilder()
     .setName('ticket-config')
-    .setDescription('Configurer le système de tickets')
+    .setDescription('Ouvrir le panneau de configuration des tickets')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .setDMPermission(false)
-    .addSubcommand((s) =>
-      s
-        .setName('general')
-        .setDescription('Réglages généraux')
-        .addChannelOption((o) =>
-          o
-            .setName('salon_demandes')
-            .setDescription('Salon staff où arrivent les demandes à accepter/refuser')
-            .addChannelTypes(ChannelType.GuildText),
-        )
-        .addChannelOption((o) =>
-          o.setName('categorie_discord').setDescription('Catégorie où créer les salons de tickets').addChannelTypes(ChannelType.GuildCategory),
-        )
-        .addIntegerOption((o) => o.setName('max_tickets').setDescription('Tickets ouverts max par membre').setMinValue(1).setMaxValue(10))
-        .addStringOption((o) => o.setName('format_nom').setDescription('Nom des salons. Variables : {numero} {user} {categorie}'))
-        .addBooleanOption((o) => o.setName('transcript_mp').setDescription('Envoyer le transcript en MP au membre à la fermeture'))
-        .addBooleanOption((o) => o.setName('mention_staff').setDescription('Mentionner les rôles staff à chaque nouveau ticket')),
-    )
-    .addSubcommand((s) =>
-      s
-        .setName('staff')
-        .setDescription('Ajouter / retirer un rôle staff (accès à tous les tickets)')
-        .addRoleOption((o) => o.setName('role').setDescription('Rôle').setRequired(true)),
-    )
-    .addSubcommand((s) =>
-      s
-        .setName('raison')
-        .setDescription('Créer ou modifier une raison de ticket (option du menu)')
-        .addStringOption((o) => o.setName('nom').setDescription('Nom affiché (ex: Recrutement)').setRequired(true).setAutocomplete(true).setMaxLength(100))
-        .addStringOption((o) => o.setName('emoji').setDescription('Emoji (ex: 📩 ou <:nom:id>)'))
-        .addStringOption((o) => o.setName('description').setDescription('Petit texte sous l\'option').setMaxLength(100))
-        .addBooleanOption((o) => o.setName('validation').setDescription('Le staff doit accepter la demande avant création (défaut : oui)'))
-        .addStringOption((o) => o.setName('question').setDescription('Question posée au membre (formulaire). Vide = aucune').setMaxLength(45))
-        .addStringOption((o) => o.setName('message').setDescription('Message d\'accueil dans le ticket. Variables : {user} {numero}… \\n = retour ligne'))
-        .addRoleOption((o) => o.setName('role_staff').setDescription('Rôle staff spécifique à cette raison'))
-        .addChannelOption((o) =>
-          o.setName('categorie_discord').setDescription('Catégorie Discord spécifique').addChannelTypes(ChannelType.GuildCategory),
-        ),
-    )
-    .addSubcommand((s) =>
-      s
-        .setName('raison-supprimer')
-        .setDescription('Supprimer une raison de ticket')
-        .addStringOption((o) => o.setName('nom').setDescription('Raison').setRequired(true).setAutocomplete(true)),
-    )
-    .addSubcommand((s) => s.setName('voir').setDescription('Voir la configuration actuelle')),
-
-  async autocomplete(interaction) {
-    const focused = interaction.options.getFocused().toLowerCase();
-    await interaction.respond(
-      store(interaction.guildId)
-        .categories.filter((c) => c.label.toLowerCase().includes(focused))
-        .slice(0, 25)
-        .map((c) => ({ name: c.label, value: c.label })),
-    );
-  },
+    .setDMPermission(false),
 
   async execute(interaction) {
-    const sub = interaction.options.getSubcommand();
-    const t = store(interaction.guildId);
-    const o = interaction.options;
+    return interaction.reply({ ...homeView(interaction.guild), flags: MessageFlags.Ephemeral });
+  },
+};
 
-    if (sub === 'general') {
-      const c = t.config;
-      if (o.getChannel('salon_demandes')) c.requestChannelId = o.getChannel('salon_demandes').id;
-      if (o.getChannel('categorie_discord')) c.parentId = o.getChannel('categorie_discord').id;
-      if (o.getInteger('max_tickets')) c.maxOpen = o.getInteger('max_tickets');
-      if (o.getString('format_nom')) c.nameFormat = o.getString('format_nom');
-      if (o.getBoolean('transcript_mp') !== null) c.dmTranscript = o.getBoolean('transcript_mp');
-      if (o.getBoolean('mention_staff') !== null) c.pingStaff = o.getBoolean('mention_staff');
-      db.save(interaction.guildId);
-      return ok(interaction, 'Configuration des tickets mise à jour. Voir avec `/ticket-config voir`.');
+const setupComponents = {
+  async tks(interaction, [action, key, id]) {
+    const { guild } = interaction;
+    if (!canConfigure(interaction.member)) return fail(interaction, 'Vous n\'avez pas accès à la configuration des tickets.');
+    const t = store(guild.id);
+    const c = t.config;
+    const findCat = (catId) => t.categories.find((cat) => cat.id === catId);
+
+    // Navigation
+    if (action === 'home') return interaction.update(homeView(guild));
+    if (action === 'options') return interaction.update(optionsView(guild));
+    if (action === 'reasons') return interaction.update(reasonsView(guild));
+    if (action === 'send') return interaction.update(sendView(guild));
+    if (action === 'pick') {
+      const cat = findCat(interaction.values[0]);
+      return interaction.update(cat ? reasonView(guild, cat) : reasonsView(guild));
     }
 
-    if (sub === 'staff') {
-      const role = o.getRole('role');
-      const list = t.config.staffRoleIds;
-      const idx = list.indexOf(role.id);
-      if (idx >= 0) list.splice(idx, 1);
-      else list.push(role.id);
-      db.save(interaction.guildId);
-      return ok(interaction, idx >= 0 ? `${role} n'est plus staff des tickets.` : `${role} est maintenant staff des tickets.`);
+    // Réglages généraux (menus de sélection)
+    if (action === 'set') {
+      const value = interaction.values[0] || null;
+      if (key === 'request') c.requestChannelId = value;
+      if (key === 'parent') c.parentId = value;
+      if (key === 'logs') db.guild(guild.id).logs.tickets = value;
+      if (key === 'staff') c.staffRoleIds = [...interaction.values];
+      db.save(guild.id);
+      return interaction.update(homeView(guild));
     }
 
-    if (sub === 'raison') {
-      const label = o.getString('nom').trim();
-      if (o.getString('emoji') && !isValidEmoji(o.getString('emoji'))) return fail(interaction, EMOJI_ERROR);
-      let cat = t.categories.find((c) => c.label.toLowerCase() === label.toLowerCase());
-      const created = !cat;
-      if (!cat) {
-        if (t.categories.length >= 25) return fail(interaction, 'Maximum 25 raisons.');
-        cat = { id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, label, approval: true, staffRoleIds: [] };
-        t.categories.push(cat);
+    if (action === 'toggle') {
+      if (key === 'userCanClose') c.userCanClose = c.userCanClose === false;
+      else c[key] = !c[key];
+      db.save(guild.id);
+      return interaction.update(optionsView(guild));
+    }
+
+    // Panel
+    if (action === 'template') {
+      c.panelTemplate = interaction.values[0] === '__default' ? null : interaction.values[0];
+      db.save(guild.id);
+      return interaction.update(sendView(guild));
+    }
+    if (action === 'sendto') {
+      const channel = guild.channels.cache.get(interaction.values[0]);
+      if (!channel) return interaction.update(sendView(guild));
+      if (!channel.permissionsFor(guild.members.me)?.has(['SendMessages', 'EmbedLinks', 'ViewChannel'])) {
+        return interaction.update(sendView(guild, `❌ Je n'ai pas la permission d'écrire dans ${channel}.`));
       }
-      cat.label = label;
-      if (o.getString('emoji')) cat.emoji = o.getString('emoji').trim();
-      if (o.getString('description')) cat.description = o.getString('description');
-      if (o.getBoolean('validation') !== null) cat.approval = o.getBoolean('validation');
-      if (o.getString('question') !== null) cat.question = o.getString('question').trim() || null;
-      if (o.getString('message')) cat.welcome = o.getString('message').replace(/\\n/g, '\n');
-      if (o.getRole('role_staff')) cat.staffRoleIds = [o.getRole('role_staff').id];
-      if (o.getChannel('categorie_discord')) cat.parentId = o.getChannel('categorie_discord').id;
-      db.save(interaction.guildId);
-      await ok(interaction, `Raison **${cat.emoji || ''} ${cat.label}** ${created ? 'créée' : 'modifiée'}. Les panels existants sont mis à jour.`);
-      return refreshPanels(interaction.guild);
+      const msg = await sendPanel(guild, channel, c.panelTemplate);
+      return interaction.update(sendView(guild, `✅ Panel envoyé : ${msg.url}\nPour modifier son texte : \`/embed modifier\` avec ce lien.`));
     }
 
-    if (sub === 'raison-supprimer') {
-      const label = o.getString('nom').toLowerCase();
-      const before = t.categories.length;
-      t.categories = t.categories.filter((c) => c.label.toLowerCase() !== label);
-      if (before === t.categories.length) return fail(interaction, 'Raison introuvable.');
-      db.save(interaction.guildId);
-      await ok(interaction, 'Raison supprimée.');
-      return refreshPanels(interaction.guild);
+    // Raisons
+    if (action === 'rstaff' || action === 'rparent' || action === 'rapproval' || action === 'rup' || action === 'rdel') {
+      const cat = findCat(key);
+      if (!cat) return interaction.update(reasonsView(guild));
+      if (action === 'rstaff') cat.staffRoleIds = [...interaction.values];
+      if (action === 'rparent') cat.parentId = interaction.values[0] || null;
+      if (action === 'rapproval') cat.approval = cat.approval === false;
+      if (action === 'rup') {
+        const idx = t.categories.indexOf(cat);
+        if (idx > 0) [t.categories[idx - 1], t.categories[idx]] = [t.categories[idx], t.categories[idx - 1]];
+      }
+      if (action === 'rdel') t.categories = t.categories.filter((x) => x !== cat);
+      db.save(guild.id);
+      await interaction.update(action === 'rdel' ? reasonsView(guild) : reasonView(guild, cat));
+      if (['rup', 'rdel'].includes(action)) await refreshPanels(guild);
+      return;
     }
 
-    if (sub === 'voir') {
-      const c = t.config;
-      const cats = t.categories
-        .map(
-          (cat) =>
-            `${cat.emoji || '•'} **${cat.label}** — ${cat.approval !== false ? 'validation staff' : 'ouverture directe'}${cat.question ? ` — ❓ ${cat.question}` : ''}${cat.staffRoleIds?.length ? ` — ${cat.staffRoleIds.map((id) => `<@&${id}>`).join(' ')}` : ''}`,
-        )
-        .join('\n');
-      const embed = info(
-        [
-          `**Salon des demandes :** ${c.requestChannelId ? `<#${c.requestChannelId}>` : '*aucun (ouverture directe)*'}`,
-          `**Catégorie :** ${c.parentId ? `<#${c.parentId}>` : '*aucune*'}`,
-          `**Rôles staff :** ${c.staffRoleIds.map((id) => `<@&${id}>`).join(' ') || '*aucun (admins seulement)*'}`,
-          `**Max par membre :** ${c.maxOpen}`,
-          `**Format du nom :** \`${c.nameFormat}\``,
-          `**Transcript en MP :** ${c.dmTranscript ? 'oui' : 'non'} • **Mention staff :** ${c.pingStaff ? 'oui' : 'non'}`,
-          `**Logs / transcripts :** ${db.guild(interaction.guildId).logs.tickets ? `<#${db.guild(interaction.guildId).logs.tickets}>` : '*non configuré — `/logs salon type:Tickets`*'}`,
-          '',
-          `**Raisons (${t.categories.length}) :**`,
-          cats || '*Aucune — ajoutez-en avec `/ticket-config raison`*',
-        ].join('\n'),
-      ).setTitle('🎫 Configuration des tickets');
-      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    // Ouverture des formulaires
+    if (action === 'modal') {
+      if (key === 'options') {
+        return interaction.showModal(
+          textModal('tks:m:options', 'Réglages des tickets', [
+            { id: 'max', label: 'Tickets ouverts max par membre (1-10)', value: String(c.maxOpen), required: true, max: 2 },
+            { id: 'name', label: 'Nom des salons ({numero} {user} {categorie})', value: c.nameFormat, required: true, max: 80 },
+            { id: 'placeholder', label: 'Texte du menu déroulant', value: c.placeholder, max: 150, placeholder: 'Choisissez la raison de votre ticket' },
+            { id: 'autoclose', label: 'Fermeture auto. après X heures (0 = jamais)', value: String(c.autoCloseHours || 0), max: 4 },
+          ]),
+        );
+      }
+      if (key === 'new') return interaction.showModal(reasonModal('tks:m:new', null));
+      const cat = findCat(id);
+      if (!cat) return interaction.update(reasonsView(guild));
+      if (key === 'edit') return interaction.showModal(reasonModal(`tks:m:edit:${cat.id}`, cat));
+      if (key === 'questions') {
+        return interaction.showModal(
+          textModal(`tks:m:questions:${cat.id}`, 'Questions du formulaire', [
+            {
+              id: 'questions',
+              label: '1 question par ligne (5 max, 45 caractères)',
+              value: questionsOf(cat).join('\n'),
+              style: TextInputStyle.Paragraph,
+              max: 500,
+              placeholder: 'Quel est votre pseudo ?\nExpliquez votre demande\n(vide = pas de formulaire)',
+            },
+          ]),
+        );
+      }
+    }
+
+    // Validation des formulaires
+    if (action === 'm') {
+      if (key === 'options') {
+        const max = Number(interaction.fields.getTextInputValue('max'));
+        const hours = Number(interaction.fields.getTextInputValue('autoclose') || 0);
+        if (!Number.isInteger(max) || max < 1 || max > 10) return fail(interaction, 'Le nombre max doit être entre 1 et 10.');
+        if (!Number.isFinite(hours) || hours < 0 || hours > 720) return fail(interaction, 'La fermeture automatique doit être entre 0 et 720 heures.');
+        c.maxOpen = max;
+        c.nameFormat = interaction.fields.getTextInputValue('name').trim() || 'ticket-{numero}';
+        c.placeholder = interaction.fields.getTextInputValue('placeholder').trim() || null;
+        c.autoCloseHours = hours;
+        db.save(guild.id);
+        await interaction.update(optionsView(guild));
+        return refreshPanels(guild);
+      }
+
+      if (key === 'new') {
+        if (t.categories.length >= 25) return fail(interaction, 'Maximum 25 raisons.');
+        const cat = { id: newId(), approval: true, staffRoleIds: [] };
+        const error = applyReasonFields(cat, interaction.fields);
+        if (error) return fail(interaction, error);
+        const parsed = parseQuestions(interaction.fields.getTextInputValue('questions'));
+        if (parsed.error) return fail(interaction, parsed.error);
+        cat.questions = parsed.questions;
+        t.categories.push(cat);
+        db.save(guild.id);
+        await interaction.update(reasonView(guild, cat));
+        return refreshPanels(guild);
+      }
+
+      const cat = findCat(id);
+      if (!cat) return fail(interaction, 'Cette raison n\'existe plus.');
+      if (key === 'edit') {
+        const error = applyReasonFields(cat, interaction.fields);
+        if (error) return fail(interaction, error);
+      }
+      if (key === 'questions') {
+        const parsed = parseQuestions(interaction.fields.getTextInputValue('questions'));
+        if (parsed.error) return fail(interaction, parsed.error);
+        cat.questions = parsed.questions;
+        delete cat.question;
+      }
+      db.save(guild.id);
+      await interaction.update(reasonView(guild, cat));
+      return refreshPanels(guild);
     }
   },
 };
+
+// Fermeture automatique des tickets inactifs (vérifiée toutes les 10 minutes).
+function startAutoClose(client) {
+  setInterval(async () => {
+    for (const guild of client.guilds.cache.values()) {
+      const t = store(guild.id);
+      const hours = t.config.autoCloseHours;
+      if (!hours) continue;
+      for (const record of Object.values(t.records)) {
+        if (record.status !== 'open' || !record.channelId) continue;
+        const channel = guild.channels.cache.get(record.channelId);
+        if (!channel) continue;
+        const last = channel.lastMessageId ? SnowflakeUtil.timestampFrom(channel.lastMessageId) : record.openedAt;
+        if (Date.now() - last < hours * 3600000) continue;
+        await closeTicket(guild, record, client.user, `Fermeture automatique après ${hours} h d'inactivité`).catch((err) => console.error('[tickets] auto-close', err.message));
+      }
+    }
+  }, 10 * 60 * 1000);
+}
 
 const ticketCommand = {
   data: new SlashCommandBuilder()
@@ -594,17 +922,13 @@ const ticketCommand = {
     const t = store(guild.id);
 
     if (sub === 'panel') {
-      if (!isAdmin(member)) return fail(interaction, 'Réservé aux administrateurs (permission Gérer le serveur).');
-      if (!t.categories.length) return fail(interaction, 'Ajoutez d\'abord au moins une raison avec `/ticket-config raison`.');
+      if (!canConfigure(member)) return fail(interaction, 'Vous n\'avez pas accès à la configuration des tickets.');
+      if (!t.categories.length) return fail(interaction, 'Ajoutez d\'abord au moins une raison avec `/ticket-config`.');
       const channel = interaction.options.getChannel('salon') || interaction.channel;
       const name = interaction.options.getString('modele');
-      const template = name ? db.guild(guild.id).embeds[name] : defaultPanel();
-      if (!template) return fail(interaction, `Le modèle \`${name}\` n'existe pas.`);
+      if (name && !db.guild(guild.id).embeds[name]) return fail(interaction, `Le modèle \`${name}\` n'existe pas.`);
       const placeholder = interaction.options.getString('texte_menu');
-      const msg = await channel.send({ ...renderTemplate(template, memberVars(null, guild)), components: panelComponents(guild.id, placeholder) });
-      t.panels = t.panels || [];
-      t.panels.push({ channelId: channel.id, messageId: msg.id, placeholder });
-      db.save(guild.id);
+      const msg = await sendPanel(guild, channel, name, placeholder);
       return ok(interaction, `Panel envoyé dans ${channel}. Personnalisez-le avec \`/embed modifier lien:${msg.url}\`.`);
     }
 
@@ -662,7 +986,7 @@ const ticketCommand = {
     const staff = isStaff(member, cat);
 
     if (sub === 'fermer') {
-      if (!staff && member.id !== record.userId) return fail(interaction, 'Vous ne pouvez pas fermer ce ticket.');
+      if (!staff && (member.id !== record.userId || t.config.userCanClose === false)) return fail(interaction, 'Vous ne pouvez pas fermer ce ticket.');
       if (record.status === 'closed') return fail(interaction, 'Ce ticket est déjà fermé.');
       await interaction.deferReply();
       await closeTicket(guild, record, interaction.user, interaction.options.getString('raison'));
@@ -729,14 +1053,22 @@ const components = {
         await interaction.update({ components: interaction.message.components });
         return fail(interaction, `Vous avez déjà ${t.config.maxOpen > 1 ? `${t.config.maxOpen} tickets` : 'un ticket'} en cours. Attendez sa fermeture.`);
       }
-      if (cat.question) {
+      const qs = questionsOf(cat);
+      if (qs.length) {
         return interaction.showModal(
           new ModalBuilder()
             .setCustomId(`tk:form:${cat.id}`)
             .setTitle(truncate(`${cat.label}`, 45))
             .addComponents(
-              new ActionRowBuilder().addComponents(
-                new TextInputBuilder().setCustomId('answer').setLabel(cat.question).setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000),
+              qs.map((q, i) =>
+                new ActionRowBuilder().addComponents(
+                  new TextInputBuilder()
+                    .setCustomId(`q${i}`)
+                    .setLabel(truncate(q, 45))
+                    .setStyle(qs.length > 2 ? TextInputStyle.Short : TextInputStyle.Paragraph)
+                    .setRequired(true)
+                    .setMaxLength(qs.length > 2 ? 400 : 1000),
+                ),
               ),
             ),
         );
@@ -751,7 +1083,8 @@ const components = {
       if (interaction.isFromMessage()) await interaction.update({ components: interaction.message.components });
       else await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       if (activeCount(guild.id, interaction.user.id) >= (t.config.maxOpen || 1)) return fail(interaction, 'Vous avez déjà un ticket en cours.');
-      return submitTicket(interaction, cat, interaction.fields.getTextInputValue('answer'));
+      const answers = questionsOf(cat).map((q, i) => ({ q, a: interaction.fields.fields.has(`q${i}`) ? interaction.fields.getTextInputValue(`q${i}`) : '' }));
+      return submitTicket(interaction, cat, answers);
     }
 
     const record = t.records[arg];
@@ -854,7 +1187,7 @@ const components = {
     }
 
     if (action === 'close') {
-      if (!staff && interaction.user.id !== record.userId) return fail(interaction, 'Vous ne pouvez pas fermer ce ticket.');
+      if (!staff && (interaction.user.id !== record.userId || t.config.userCanClose === false)) return fail(interaction, 'Vous ne pouvez pas fermer ce ticket.');
       if (record.status === 'closed') return fail(interaction, 'Ce ticket est déjà fermé.');
       return interaction.showModal(
         new ModalBuilder()
@@ -910,4 +1243,9 @@ const events = {
   },
 };
 
-module.exports = { commands: [configCommand, ticketCommand], components, events };
+module.exports = {
+  commands: [configCommand, ticketCommand],
+  components: { ...components, ...setupComponents },
+  events,
+  init: startAutoClose,
+};

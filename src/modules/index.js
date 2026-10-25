@@ -8,4 +8,5 @@ module.exports = [
   require('./logs'),
   require('./rolemenus'),
   require('./utility'),
+  require('./whitelist'),
 ];

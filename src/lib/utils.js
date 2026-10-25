@@ -1,4 +1,4 @@
-const { EmbedBuilder, PermissionFlagsBits, MessageFlags } = require('discord.js');
+const { EmbedBuilder, MessageFlags } = require('discord.js');
 
 const COLORS = {
   bleu: 0x3b82f6,
@@ -178,7 +178,8 @@ async function fetchMessageFromLink(guild, link) {
 }
 
 function isAdmin(member) {
-  return member.permissions.has(PermissionFlagsBits.ManageGuild);
+  // Chargé à la demande pour éviter une dépendance circulaire.
+  return require('./access').isAdmin(member);
 }
 
 function parseDuration(input) {

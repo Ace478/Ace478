@@ -4,12 +4,13 @@ const db = require('../lib/db');
 const { baseEmbed, ok, fail, info, ts } = require('../lib/utils');
 
 const HELP = [
-  ['🎫 Tickets', '`/ticket-config` réglages, raisons, staff\n`/ticket panel` envoyer le panel\n`/ticket fermer · ajouter · retirer · renommer · pause · transcript`\n`/ticket historique · stats`'],
+  ['🎫 Tickets', '`/ticket-config` panneau de configuration\n`/ticket panel` envoyer le panel\n`/ticket fermer · ajouter · retirer · renommer · pause · transcript`\n`/ticket historique · stats`'],
   ['🎨 Embeds', '`/embed creer` éditeur visuel\n`/embed modifier` modifier un message du bot\n`/embed envoyer · modeles · supprimer`'],
   ['👋 Accueil', '`/accueil bienvenue · depart` messages\n`/accueil autorole` rôles à l\'arrivée\n`/accueil test · voir`'],
   ['🛡️ Modération', '`/ban` `/unban` `/kick` `/mute` `/unmute`\n`/warn` `/avertissements`\n`/clear` `/verrouiller` `/slowmode`'],
   ['📜 Logs', '`/logs salon` choisir les salons\n`/logs voir`'],
   ['🎭 Rôles', '`/roles creer · ajouter · retirer`'],
+  ['👑 Accès', '`/owner ajouter · retirer · liste`\n`/wl ajouter · retirer` membres/rôles\n`/wl autoriser · interdire` commandes\n`/wl mode · liste`'],
   ['🧰 Utilitaires', '`/sondage` `/suggestion` `/dire`\n`/userinfo` `/serverinfo` `/avatar` `/ping`'],
 ];
 

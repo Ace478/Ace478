@@ -4,12 +4,13 @@ Bot Discord tout-en-un, entièrement en français et en commandes slash (`/`) :
 
 | Module | Ce qu'il fait |
 | --- | --- |
-| 🎫 **Tickets** | Panel avec menu déroulant, formulaire, **validation par le staff** (accepter / refuser), MP au membre, prise en charge, **pause**, fermeture, réouverture, suppression, **transcripts HTML**, historique et statistiques |
+| 🎫 **Tickets** | **Panneau de configuration interactif**, menu déroulant, formulaires jusqu'à 5 questions, **validation par le staff** (accepter / refuser), MP au membre, prise en charge, **pause**, fermeture, réouverture, suppression, **transcripts HTML**, fermeture auto., historique et statistiques |
 | 🎨 **Embeds** | Éditeur visuel complet (titre, description, couleurs, images, champs, auteur, pied de page…), aperçu en direct, **modèles sauvegardés**, import/export JSON (Discohook), modification de messages déjà envoyés |
 | 👋 **Accueil** | Messages de bienvenue / départ personnalisables (avec vos modèles d'embed), MP de bienvenue, **rôles automatiques** |
 | 🛡️ **Modération** | ban, unban, kick, mute, unmute, warn + historique, clear, verrouiller, slowmode — avec MP au membre et numéro de cas |
 | 📜 **Logs** | Messages supprimés/modifiés, arrivées/départs, rôles, pseudos, vocal, salons/rôles, modération, tickets — chaque type dans le salon de votre choix |
 | 🎭 **Rôles** | Menus de rôles en libre-service (boutons ou menu déroulant) |
+| 👑 **Accès** | **WL owner** (accès total) et **WL** (membres/rôles autorisés sur les commandes de votre choix), mode strict |
 | 🧰 **Utilitaires** | sondages, suggestions (avec fil de discussion), `/dire`, userinfo, serverinfo, avatar, aide |
 
 Aucune base de données à installer : tout est enregistré dans le dossier `data/`.
@@ -51,14 +52,21 @@ Les commandes apparaissent **instantanément** sur vos serveurs au démarrage. T
 
 ## 3. Configurer les tickets (comme sur la capture)
 
-```text
-/logs salon type:Tickets salon:#logs-tickets              ← transcripts + historique
-/ticket-config general salon_demandes:#demandes-staff categorie_discord:Tickets
-/ticket-config staff role:@Staff
-/ticket-config raison nom:Recrutement emoji:📩 description:Rejoindre l'équipe question:Présentez-vous
-/ticket-config raison nom:Support emoji:🛠️ description:Un problème ? validation:False
-/ticket panel salon:#tickets
-```
+Tapez **`/ticket-config`** : un panneau interactif s'ouvre (visible par vous seul), tout se règle avec des menus et des boutons.
+
+**Page d'accueil** — quatre menus de sélection :
+- 📨 **Salon des demandes** : où le staff reçoit les demandes à accepter / refuser (vide = les tickets s'ouvrent directement) ;
+- 📁 **Catégorie** où créer les salons de tickets ;
+- 📜 **Salon des logs** : historique et transcripts ;
+- 🛡️ **Rôles staff** (jusqu'à 10).
+
+**📋 Raisons** — chaque raison est une option du menu déroulant (25 max) :
+- **➕ Ajouter une raison** : nom, emoji, description, message d'accueil, questions ;
+- pour chaque raison : **rôles staff spécifiques**, **catégorie spécifique**, **validation staff oui / non**, **jusqu'à 5 questions** posées dans un formulaire avant l'ouverture, **⬆️ Monter** pour changer l'ordre, **🗑️ Supprimer**.
+
+**⚙️ Options** : tickets max par membre, format du nom des salons (`{categorie}-{numero}`…), texte du menu déroulant, **fermeture automatique après X heures d'inactivité**, transcript en MP, mention du staff, autoriser ou non le membre à fermer son ticket.
+
+**📤 Envoyer le panel** : choisissez l'apparence (modèle par défaut ou votre modèle `/embed`) puis le salon. Les panels déjà envoyés **se mettent à jour tout seuls** quand vous modifiez les raisons.
 
 Fonctionnement :
 
@@ -75,8 +83,6 @@ Historique : `/ticket historique membre:@…` — Statistiques : `/ticket stats`
 
 - soit créez un modèle avec `/embed creer`, sauvegardez-le (ex. `ticket-panel`) puis `/ticket panel modele:ticket-panel` ;
 - soit modifiez le panel déjà envoyé avec `/embed modifier lien:<lien du message>` (le menu déroulant est conservé).
-
-Quand vous ajoutez / modifiez une raison, **les panels existants se mettent à jour tout seuls**.
 
 ---
 
@@ -112,7 +118,34 @@ Image (bannière) : collez le lien direct de l'image (clic droit sur une image e
 
 ---
 
-## 5. Accueil
+## 5. WL owner et WL
+
+Par défaut, chaque commande demande la permission Discord habituelle (ex. *Bannir des membres* pour `/ban`). Deux listes permettent de donner des accès en plus :
+
+**👑 WL owner** — accès **total** au bot, comme le propriétaire (toutes les commandes et la gestion de la WL).
+Seul le **propriétaire du serveur** (ou un ID mis dans `BOT_OWNERS` du `.env`) peut la modifier.
+
+```text
+/owner ajouter membre:@Pseudo
+/owner retirer membre:@Pseudo
+/owner liste
+```
+
+**📋 WL** — des membres **ou des rôles** qui peuvent utiliser **uniquement les commandes que vous choisissez** (gérée par les owners).
+
+```text
+/wl ajouter cible:@Pseudo              ← un membre ou un rôle
+/wl autoriser commande:ban             ← la liste des commandes s'affiche automatiquement
+/wl autoriser commande:toutes
+/wl interdire commande:ban
+/wl retirer cible:@Pseudo
+/wl liste
+/wl mode strict:True                   ← les permissions Discord ne suffisent plus : seuls owners + WL passent
+```
+
+> ℹ️ Comme c'est le bot qui vérifie les accès, toutes les commandes sont visibles dans la liste `/` ; un membre sans accès reçoit simplement un refus.
+
+## 6. Accueil
 
 ```text
 /accueil bienvenue salon:#bienvenue texte:{user}            ← embed par défaut
@@ -122,7 +155,7 @@ Image (bannière) : collez le lien direct de l'image (clic droit sur une image e
 /accueil test type:Bienvenue
 ```
 
-## 6. Logs, rôles, suggestions
+## 7. Logs, rôles, suggestions
 
 ```text
 /logs salon type:Tous salon:#logs          ← ou un salon différent par type

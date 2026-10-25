@@ -2,6 +2,7 @@
 const { SlashCommandBuilder, PermissionFlagsBits, ChannelType, MessageFlags } = require('discord.js');
 const db = require('../lib/db');
 const { sendLog } = require('../lib/logger');
+const { isOwner, isTrueOwner } = require('../lib/access');
 const { baseEmbed, ok, fail, info, parseDuration, formatDuration, ts, truncate } = require('../lib/utils');
 
 const COLORS = { ban: 0xef4444, unban: 0x22c55e, kick: 0xf97316, mute: 0xeab308, unmute: 0x22c55e, warn: 0xeab308, clear: 0x3b82f6, lock: 0x6b7280 };
@@ -46,7 +47,8 @@ function checkHierarchy(interaction, member) {
   if (!member) return null;
   if (member.id === interaction.user.id) return 'Vous ne pouvez pas vous sanctionner vous-même.';
   if (member.id === interaction.guild.ownerId) return 'Impossible de sanctionner le propriétaire du serveur.';
-  if (interaction.member.roles.highest.position <= member.roles.highest.position && interaction.user.id !== interaction.guild.ownerId) {
+  if (isOwner(member) && !isTrueOwner(interaction.member)) return 'Impossible de sanctionner un membre de la WL owner.';
+  if (interaction.member.roles.highest.position <= member.roles.highest.position && !isOwner(interaction.member)) {
     return 'Ce membre a un rôle supérieur ou égal au vôtre.';
   }
   if (interaction.guild.members.me.roles.highest.position <= member.roles.highest.position) {

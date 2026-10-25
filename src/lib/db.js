@@ -18,6 +18,10 @@ function defaults() {
         nameFormat: 'ticket-{numero}',
         dmTranscript: true,
         pingStaff: true,
+        userCanClose: true,
+        placeholder: null,
+        panelTemplate: null,
+        autoCloseHours: 0,
       },
       categories: [],
       counter: 0,
@@ -32,6 +36,7 @@ function defaults() {
     modCases: 0,
     roleMenus: {},
     suggestions: { channelId: null, counter: 0 },
+    whitelist: { owners: [], users: [], roles: [], commands: [], strict: false },
   };
 }
 

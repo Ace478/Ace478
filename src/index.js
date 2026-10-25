@@ -2,6 +2,7 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, Partials, Events, ActivityType, MessageFlags } = require('discord.js');
 const db = require('./lib/db');
 const { fail } = require('./lib/utils');
+const { canUse, isOwner } = require('./lib/access');
 const modules = require('./modules');
 
 if (!process.env.DISCORD_TOKEN) {
@@ -49,7 +50,9 @@ for (const [name, handlers] of events) {
 // Les commandes sont enregistrées par serveur : elles apparaissent instantanément.
 async function registerCommands(guild) {
   try {
-    await guild.commands.set([...commands.values()].map((c) => c.data.toJSON()));
+    // Les permissions sont vérifiées par le bot (WL / owners) : toutes les commandes
+    // sont donc visibles côté Discord, et refusées si le membre n'y a pas accès.
+    await guild.commands.set([...commands.values()].map((c) => ({ ...c.data.toJSON(), default_member_permissions: null })));
   } catch (err) {
     console.error(`[commandes] Échec sur ${guild.name}:`, err.message);
   }
@@ -58,6 +61,7 @@ async function registerCommands(guild) {
 client.once(Events.ClientReady, async () => {
   console.log(`✅ Connecté en tant que ${client.user.tag} sur ${client.guilds.cache.size} serveur(s).`);
   client.user.setActivity(process.env.STATUS || '/aide', { type: ActivityType.Watching });
+  for (const mod of modules) mod.init?.(client);
   for (const guild of client.guilds.cache.values()) await registerCommands(guild);
   console.log(`✅ ${commands.size} commandes enregistrées.`);
 });
@@ -77,7 +81,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
     if (interaction.isChatInputCommand()) {
       const command = commands.get(interaction.commandName);
-      if (command) await command.execute(interaction);
+      if (!command) return;
+      const allowed =
+        command.access === 'owner'
+          ? isOwner(interaction.member)
+          : canUse(interaction.member, command.data.name, command.data.default_member_permissions ? BigInt(command.data.default_member_permissions) : null);
+      if (!allowed) {
+        return fail(interaction, command.access === 'owner' ? 'Commande réservée aux owners.' : 'Vous n\'avez pas accès à cette commande (permission ou WL manquante).');
+      }
+      await command.execute(interaction);
       return;
     }
     if (interaction.isMessageComponent() || interaction.isModalSubmit()) {
