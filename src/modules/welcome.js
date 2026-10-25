@@ -12,12 +12,14 @@ const DEFAULTS = {
     content: '{user}',
     embeds: [
       {
-        color: 0x3b82f6,
-        author: { name: '{server}', icon_url: '{server.icon}' },
-        title: '👋 Bienvenue {user.displayname} !',
-        description: 'Bienvenue {user} sur **{server}** !\nNous sommes maintenant **{server.members}** membres.\n\n> Pense à lire le règlement et amuse-toi bien 🎉',
+        color: 0x2b2d31,
+        description: [
+          '# 👋 Bienvenue sur {server}, {user} !',
+          'Ravi de te voir ici, **{user.name}**, tu es notre **{server.members}e membre** !',
+          '',
+          'Prends le temps de lire {salon:regles} et jette un œil à {salon:infos} pour bien démarrer !',
+        ].join('\n'),
         thumbnail: { url: '{user.avatar}' },
-        timestamp: true,
       },
     ],
   },
@@ -95,6 +97,7 @@ function view(guild) {
         ui.button('wel:edit:leave', 'Personnaliser départ', '🎨', ButtonStyle.Primary),
         ui.button('wel:test:welcome', 'Tester', '🧪'),
         ui.button('wel:test:leave', 'Tester départ', '🧪'),
+        ui.button('wel:reset:welcome', 'Bienvenue par défaut', '♻️', ButtonStyle.Danger).setDisabled(!data.welcome.message),
       ),
     ],
   };
@@ -155,6 +158,12 @@ const components = {
     if (action === 'toggle') {
       if (key === 'dm') data.welcome.dm = !data.welcome.dm;
       else data[key].enabled = !data[key].enabled;
+    }
+
+    if (action === 'reset') {
+      data[key].message = null;
+      data[key].template = null;
+      data[key].content = '';
     }
 
     if (action === 'edit') return openBuilder(interaction, key, null);

@@ -63,15 +63,49 @@ function memberVars(member, guild, extra = {}) {
     vars['server.members'] = String(g.memberCount);
     vars.membercount = String(g.memberCount);
   }
+  if (g) vars.__guild = g;
   return { ...vars, ...extra };
+}
+
+function normalize(text) {
+  return String(text)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+// {salon:regles} -> mention du premier salon dont le nom contient "regles" (accents et emojis ignorés).
+function channelMention(guild, name) {
+  const wanted = normalize(name);
+  if (!guild || !wanted) return null;
+  const channel = guild.channels.cache.find((c) => !c.isThread?.() && normalize(c.name) === wanted) || guild.channels.cache.find((c) => !c.isThread?.() && normalize(c.name).includes(wanted));
+  return channel ? `<#${channel.id}>` : null;
 }
 
 function applyVars(text, vars) {
   if (typeof text !== 'string' || !vars) return text;
-  return text.replace(/\{([a-z0-9_.]+)\}/gi, (match, key) => {
-    const value = vars[key.toLowerCase()];
-    return value === undefined ? match : value;
-  });
+  return text
+    .replace(/\{salon:([^}]+)\}/gi, (match, name) => channelMention(vars.__guild, name) || `#${name.trim()}`)
+    .replace(/\{([a-z0-9_.]+)\}/gi, (match, key) => {
+      const value = vars[key.toLowerCase()];
+      return typeof value === 'string' ? value : match;
+    });
+}
+
+// Les liens d'images copiés depuis Discord contiennent souvent width/height,
+// ce qui affiche la bannière en petit : on les retire pour garder la taille d'origine.
+function fullSizeImage(url) {
+  if (!isUrl(url)) return url;
+  try {
+    const parsed = new URL(url.trim());
+    if (!/(^|\.)discordapp\.(net|com)$/.test(parsed.hostname)) return url;
+    for (const param of ['width', 'height', 'quality', 'format']) parsed.searchParams.delete(param);
+    if (parsed.hostname === 'media.discordapp.net' && parsed.pathname.startsWith('/attachments/')) parsed.hostname = 'cdn.discordapp.com';
+    return parsed.toString();
+  } catch {
+    return url;
+  }
 }
 
 function deepVars(value, vars) {
@@ -107,8 +141,8 @@ function cleanEmbed(raw) {
     out.footer = { text: String(e.footer.text).slice(0, 2048) };
     if (isUrl(e.footer.icon_url)) out.footer.icon_url = e.footer.icon_url;
   }
-  if (isUrl(e.image?.url)) out.image = { url: e.image.url };
-  if (isUrl(e.thumbnail?.url)) out.thumbnail = { url: e.thumbnail.url };
+  if (isUrl(e.image?.url)) out.image = { url: fullSizeImage(e.image.url) };
+  if (isUrl(e.thumbnail?.url)) out.thumbnail = { url: fullSizeImage(e.thumbnail.url) };
   if (Array.isArray(e.fields)) {
     out.fields = e.fields
       .filter((f) => f && f.name && f.value)

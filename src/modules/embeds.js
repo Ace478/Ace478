@@ -56,6 +56,7 @@ const VARIABLES_HELP = [
   '`{server}` nom du serveur',
   '`{server.icon}` URL de l\'icône du serveur',
   '`{server.members}` nombre de membres',
+  '`{salon:regles}` mention du salon dont le nom contient « regles »',
 ].join('\n');
 
 function emptyData() {
@@ -89,7 +90,7 @@ function builderView(session, member) {
       { label: 'Couleur', value: 'color', emoji: '🎨', description: e.color != null ? colorToHex(e.color) : 'Par défaut' },
       { label: 'Auteur', value: 'author', emoji: '👤', description: 'Petit texte + icône en haut' },
       { label: 'Pied de page', value: 'footer', emoji: '🔻', description: 'Petit texte + icône en bas' },
-      { label: 'Image & miniature', value: 'images', emoji: '🖼️', description: 'Grande image (bannière) / petite image à droite' },
+      { label: 'Image & miniature', value: 'images', emoji: '🖼️', description: 'Bannière en bas / petite image à droite' },
       { label: 'Ajouter un champ', value: 'field_add', emoji: '➕', description: `${e.fields?.length || 0}/25 champs` },
       { label: 'Modifier / supprimer des champs', value: 'field_remove', emoji: '➖' },
       { label: e.timestamp ? 'Retirer l\'horodatage' : 'Ajouter l\'horodatage', value: 'timestamp', emoji: '🕒' },
@@ -498,7 +499,7 @@ const components = {
       return interaction.reply({
         embeds: [
           info(
-            `${VARIABLES_HELP}${def?.help ? `\n\n**Spécifiques à ce message**\n${def.help}` : ''}\n\n**Astuces**\n• Titres dans la description : \`# Gros\`, \`## Moyen\`, \`### Petit\`\n• Citation : \`> texte\`  • Liste : \`- élément\`  • Petit texte : \`-# texte\`\n• Emoji perso : \`<:nom:id>\` (tapez \`\\:emoji:\` sur Discord pour l'obtenir)\n• Mention de salon \`<#id>\`, de rôle \`<@&id>\`\n• Image : clic droit sur une image dans Discord > *Copier le lien*`,
+            `${VARIABLES_HELP}${def?.help ? `\n\n**Spécifiques à ce message**\n${def.help}` : ''}\n\n**Astuces**\n• **Gros titre avec mention** : commencez la description par \`# Bienvenue {user} !\` (les mentions ne marchent pas dans le champ Titre)\n• Titres : \`# Gros\`, \`## Moyen\`, \`### Petit\`\n• Citation : \`> texte\`  • Liste : \`- élément\`  • Petit texte : \`-# texte\`\n• Emoji perso : \`<:nom:id>\` (tapez \`\\:emoji:\` sur Discord pour l'obtenir)\n• Mention de salon \`<#id>\`, de rôle \`<@&id>\`\n• Bannière : image **large** (ex. 1200×400 px). Lien : ouvrez l'image dans Discord > *Ouvrir dans le navigateur* > copiez l'adresse`,
           ).setTitle('❔ Variables & mise en forme'),
         ],
         flags: MessageFlags.Ephemeral,
