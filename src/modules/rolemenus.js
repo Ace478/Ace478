@@ -10,7 +10,10 @@ const {
   MessageFlags,
 } = require('discord.js');
 const db = require('../lib/db');
-const { renderTemplate, memberVars, isValidEmoji, EMOJI_ERROR, ok, fail, info, fetchMessageFromLink } = require('../lib/utils');
+const ui = require('../lib/ui');
+const { canUse } = require('../lib/access');
+const { registerTarget, openBuilder } = require('./embeds');
+const { renderTemplate, memberVars, isValidEmoji, fail, info, truncate } = require('../lib/utils');
 
 const DEFAULT_TEMPLATE = {
   embeds: [{ color: 0x3b82f6, title: '🎭 Choisissez vos rôles', description: 'Cliquez ci-dessous pour ajouter ou retirer un rôle.' }],
@@ -40,99 +43,204 @@ function buildComponents(menu) {
   return rows;
 }
 
-function canManage(interaction, role) {
-  if (role.managed || role.id === interaction.guildId) return 'Ce rôle ne peut pas être attribué.';
-  if (role.position >= interaction.guild.members.me.roles.highest.position) return `Placez mon rôle **au-dessus** de ${role} dans les paramètres du serveur.`;
-  if (role.permissions.has(PermissionFlagsBits.Administrator)) return 'Par sécurité, impossible de proposer un rôle administrateur.';
+// ---------- Panneau /roles ----------
+
+function canConfigure(member) {
+  return canUse(member, 'roles', PermissionFlagsBits.ManageRoles);
+}
+
+function roleProblem(guild, role) {
+  if (!role || role.managed || role.id === guild.id) return 'ne peut pas être attribué';
+  if (role.position >= guild.members.me.roles.highest.position) return 'est au-dessus de mon rôle';
+  if (role.permissions.has(PermissionFlagsBits.Administrator)) return 'est un rôle administrateur';
   return null;
 }
+
+function menuLink(guildId, msgId, menu) {
+  return `https://discord.com/channels/${guildId}/${menu.channelId}/${msgId}`;
+}
+
+function homeView(guild) {
+  const menus = Object.entries(db.guild(guild.id).roleMenus);
+  const embed = info(
+    [
+      'Les **menus de rôles** permettent aux membres de choisir eux-mêmes leurs rôles (notifications, jeux, couleurs…).',
+      '',
+      '➕ Pour créer un menu, choisissez le salon dans le menu **Créer un menu dans…**',
+      '✏️ Pour en modifier un, sélectionnez-le dans la liste.',
+      '',
+      `**Menus (${menus.length}) :**`,
+      menus.map(([id, m], i) => `\`${i + 1}.\` <#${m.channelId}> — ${m.roles.length} rôle(s) — [voir](${menuLink(guild.id, id, m)})`).join('\n') || '*aucun*',
+    ].join('\n'),
+  ).setTitle('🎭 Menus de rôles');
+  const rows = [];
+  if (menus.length) {
+    rows.push(
+      ui.row(
+        new StringSelectMenuBuilder()
+          .setCustomId('rmc:pick')
+          .setPlaceholder('✏️ Modifier un menu')
+          .addOptions(
+            menus.slice(0, 25).map(([id, m], i) => ({
+              label: `Menu ${i + 1} — #${guild.channels.cache.get(m.channelId)?.name || 'salon supprimé'}`,
+              value: id,
+              description: truncate(m.roles.map((r) => r.label).join(', ') || 'aucun rôle', 100),
+              emoji: '🎭',
+            })),
+          ),
+      ),
+    );
+  }
+  rows.push(ui.channelSelect('rmc:create', '➕ Créer un menu dans…', [ChannelType.GuildText, ChannelType.GuildAnnouncement], null));
+  return { embeds: [embed], components: rows };
+}
+
+function menuView(guild, msgId) {
+  const menu = db.guild(guild.id).roleMenus[msgId];
+  const embed = info(
+    [
+      `**Message :** [voir le menu](${menuLink(guild.id, msgId, menu)}) dans <#${menu.channelId}>`,
+      `**Type :** ${menu.type === 'menu' ? '📜 menu déroulant' : '🔘 boutons'}`,
+      '',
+      `**Rôles (${menu.roles.length}/25) :**`,
+      menu.roles.map((r) => `${r.emoji || '•'} **${r.label}** → <@&${r.id}>${r.description ? ` — ${r.description}` : ''}`).join('\n') || '*Aucun — ajoutez-en avec le menu ci-dessous.*',
+      '',
+      '• **🏷️ Textes & emojis** : changer le texte des boutons/options',
+      '• **🎨 Apparence** : modifier l\'embed (titre, description, image…)',
+    ].join('\n'),
+  ).setTitle('✏️ Menu de rôles');
+  return {
+    embeds: [embed],
+    components: [
+      ui.roleSelect(`rmc:roles:${msgId}`, '🎭 Rôles proposés dans ce menu', menu.roles.map((r) => r.id), { max: 25 }),
+      ui.row(
+        ui.button(`rmc:type:${msgId}`, menu.type === 'menu' ? 'Passer en boutons' : 'Passer en menu déroulant', '🔁'),
+        ui.button(`rmc:labels:${msgId}`, 'Textes & emojis', '🏷️', ButtonStyle.Primary).setDisabled(!menu.roles.length),
+        ui.button(`rmc:look:${msgId}`, 'Apparence', '🎨', ButtonStyle.Primary),
+        ui.button(`rmc:delete:${msgId}`, 'Supprimer', '🗑️', ButtonStyle.Danger),
+      ),
+      ui.row(ui.backButton('rmc:home', 'Tous les menus')),
+    ],
+  };
+}
+
+async function fetchMenuMessage(guild, msgId) {
+  const menu = db.guild(guild.id).roleMenus[msgId];
+  const channel = await guild.channels.fetch(menu.channelId).catch(() => null);
+  return channel?.messages.fetch(msgId).catch(() => null);
+}
+
+registerTarget('rolemenu', {
+  load: (guild, msgId) => db.guild(guild.id).roleMenus[msgId]?.message || DEFAULT_TEMPLATE,
+  save: async (guild, msgId, data) => {
+    const menu = db.guild(guild.id).roleMenus[msgId];
+    if (!menu) return;
+    menu.message = data;
+    db.save(guild.id);
+    const message = await fetchMenuMessage(guild, msgId);
+    const payload = renderTemplate(data, memberVars(null, guild));
+    await message?.edit({ content: payload.content || null, embeds: payload.embeds }).catch(() => null);
+  },
+  title: () => 'apparence du menu de rôles',
+  back: (guild, msgId) => (db.guild(guild.id).roleMenus[msgId] ? menuView(guild, msgId) : homeView(guild)),
+});
 
 const command = {
   data: new SlashCommandBuilder()
     .setName('roles')
-    .setDescription('Menus de rôles en libre-service')
+    .setDescription('Créer et gérer les menus de rôles en libre-service')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles)
-    .setDMPermission(false)
-    .addSubcommand((s) =>
-      s
-        .setName('creer')
-        .setDescription('Créer un nouveau menu de rôles')
-        .addStringOption((o) =>
-          o
-            .setName('type')
-            .setDescription('Boutons ou menu déroulant')
-            .setRequired(true)
-            .addChoices({ name: 'Boutons', value: 'buttons' }, { name: 'Menu déroulant', value: 'menu' }),
-        )
-        .addChannelOption((o) => o.setName('salon').setDescription('Salon (défaut : ici)').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
-        .addStringOption((o) => o.setName('modele').setDescription('Modèle d\'embed à afficher').setAutocomplete(true)),
-    )
-    .addSubcommand((s) =>
-      s
-        .setName('ajouter')
-        .setDescription('Ajouter un rôle à un menu')
-        .addStringOption((o) => o.setName('lien').setDescription('Lien du message du menu').setRequired(true))
-        .addRoleOption((o) => o.setName('role').setDescription('Rôle').setRequired(true))
-        .addStringOption((o) => o.setName('texte').setDescription('Texte du bouton/option (défaut : nom du rôle)').setMaxLength(80))
-        .addStringOption((o) => o.setName('emoji').setDescription('Emoji'))
-        .addStringOption((o) => o.setName('description').setDescription('Description (menu déroulant)').setMaxLength(100)),
-    )
-    .addSubcommand((s) =>
-      s
-        .setName('retirer')
-        .setDescription('Retirer un rôle d\'un menu')
-        .addStringOption((o) => o.setName('lien').setDescription('Lien du message du menu').setRequired(true))
-        .addRoleOption((o) => o.setName('role').setDescription('Rôle').setRequired(true)),
-    ),
-
-  async autocomplete(interaction) {
-    const focused = interaction.options.getFocused().toLowerCase();
-    await interaction.respond(
-      Object.keys(db.guild(interaction.guildId).embeds)
-        .filter((n) => n.includes(focused))
-        .slice(0, 25)
-        .map((n) => ({ name: n, value: n })),
-    );
-  },
+    .setDMPermission(false),
 
   async execute(interaction) {
-    const sub = interaction.options.getSubcommand();
-    const data = db.guild(interaction.guildId);
+    return interaction.reply({ ...homeView(interaction.guild), flags: MessageFlags.Ephemeral });
+  },
+};
 
-    if (sub === 'creer') {
-      const channel = interaction.options.getChannel('salon') || interaction.channel;
-      const name = interaction.options.getString('modele');
-      const template = name ? data.embeds[name] : DEFAULT_TEMPLATE;
-      if (!template) return fail(interaction, `Le modèle \`${name}\` n'existe pas.`);
-      const msg = await channel.send(renderTemplate(template, memberVars(null, interaction.guild)));
-      data.roleMenus[msg.id] = { channelId: channel.id, type: interaction.options.getString('type'), roles: [] };
-      db.save(interaction.guildId);
-      return ok(interaction, `Menu créé : ${msg.url}\nAjoutez des rôles avec \`/roles ajouter lien:${msg.url}\`.`);
+const configComponents = {
+  async rmc(interaction, [action, msgId]) {
+    if (!canConfigure(interaction.member)) return fail(interaction, 'Accès refusé.');
+    const { guild } = interaction;
+    const data = db.guild(guild.id);
+
+    if (action === 'home') return interaction.update(homeView(guild));
+
+    if (action === 'create') {
+      const channel = guild.channels.cache.get(interaction.values[0]);
+      if (!channel) return interaction.update(homeView(guild));
+      if (!channel.permissionsFor(guild.members.me)?.has(['ViewChannel', 'SendMessages', 'EmbedLinks'])) {
+        return fail(interaction, `Je n'ai pas la permission d'écrire dans ${channel}.`);
+      }
+      const msg = await channel.send(renderTemplate(DEFAULT_TEMPLATE, memberVars(null, guild)));
+      data.roleMenus[msg.id] = { channelId: channel.id, type: 'buttons', roles: [], message: structuredClone(DEFAULT_TEMPLATE) };
+      db.save(guild.id);
+      return interaction.update(menuView(guild, msg.id));
     }
 
-    const message = await fetchMessageFromLink(interaction.guild, interaction.options.getString('lien'));
-    const menu = message && data.roleMenus[message.id];
-    if (!menu) return fail(interaction, 'Ce message n\'est pas un menu de rôles créé avec `/roles creer`.');
-    const role = interaction.options.getRole('role');
-
-    if (sub === 'ajouter') {
-      if (interaction.options.getString('emoji') && !isValidEmoji(interaction.options.getString('emoji'))) return fail(interaction, EMOJI_ERROR);
-      const error = canManage(interaction, role);
-      if (error) return fail(interaction, error);
-      if (menu.roles.length >= 25) return fail(interaction, 'Maximum 25 rôles par menu.');
-      menu.roles = menu.roles.filter((r) => r.id !== role.id);
-      menu.roles.push({
-        id: role.id,
-        label: interaction.options.getString('texte') || role.name,
-        emoji: interaction.options.getString('emoji')?.trim() || null,
-        description: interaction.options.getString('description') || null,
-      });
-    } else {
-      menu.roles = menu.roles.filter((r) => r.id !== role.id);
+    const id = action === 'pick' ? interaction.values[0] : msgId;
+    const menu = data.roleMenus[id];
+    if (!menu) return interaction.update(homeView(guild));
+    const message = await fetchMenuMessage(guild, id);
+    if (!message) {
+      delete data.roleMenus[id];
+      db.save(guild.id);
+      await interaction.update(homeView(guild));
+      return fail(interaction, 'Le message de ce menu a été supprimé : le menu a été retiré de la liste.');
     }
-    db.save(interaction.guildId);
+
+    if (action === 'pick') return interaction.update(menuView(guild, id));
+    if (action === 'look') return openBuilder(interaction, 'rolemenu', id);
+
+    if (action === 'labels') {
+      return interaction.showModal(
+        ui.modal(`rmc:mlabels:${id}`, 'Textes & emojis des rôles', [
+          {
+            id: 'lines',
+            label: 'Une ligne par rôle : texte | emoji | description',
+            style: 'long',
+            max: 4000,
+            value: menu.roles.map((r) => [r.label, r.emoji || '', r.description || ''].join(' | ')).join('\n'),
+          },
+        ]),
+      );
+    }
+
+    if (action === 'delete') {
+      await message.delete().catch(() => null);
+      delete data.roleMenus[id];
+      db.save(guild.id);
+      return interaction.update(homeView(guild));
+    }
+
+    const refused = [];
+    if (action === 'roles') {
+      const previous = new Map(menu.roles.map((r) => [r.id, r]));
+      menu.roles = [];
+      for (const roleId of interaction.values) {
+        const role = guild.roles.cache.get(roleId);
+        const problem = roleProblem(guild, role);
+        if (problem) {
+          refused.push(`<@&${roleId}> ${problem}`);
+          continue;
+        }
+        menu.roles.push(previous.get(roleId) || { id: roleId, label: truncate(role.name, 80), emoji: null, description: null });
+      }
+    }
+    if (action === 'type') menu.type = menu.type === 'menu' ? 'buttons' : 'menu';
+    if (action === 'mlabels') {
+      const lines = interaction.fields.getTextInputValue('lines').split('\n');
+      for (const [i, r] of menu.roles.entries()) {
+        const [label, emoji, description] = (lines[i] || '').split('|').map((p) => p.trim());
+        if (label) r.label = truncate(label, 80);
+        if (emoji && !isValidEmoji(emoji)) refused.push(`Emoji invalide ignoré : \`${emoji}\``);
+        r.emoji = emoji && isValidEmoji(emoji) ? emoji : null;
+        r.description = description ? truncate(description, 100) : null;
+      }
+    }
+    db.save(guild.id);
     await message.edit({ components: buildComponents(menu) });
-    return ok(interaction, sub === 'ajouter' ? `${role} ajouté au menu.` : `${role} retiré du menu.`);
+    await interaction.update(menuView(guild, id));
+    if (refused.length) return fail(interaction, `Certains éléments ont été ignorés :\n${refused.join('\n')}`);
   },
 };
 
@@ -173,4 +281,8 @@ const components = {
   },
 };
 
-module.exports = { commands: [command], components };
+module.exports = {
+  commands: [command],
+  components: { ...components, ...configComponents },
+  dashboard: { key: 'roles', label: 'Menus de rôles', emoji: '🎭', canAccess: canConfigure, view: (interaction) => homeView(interaction.guild) },
+};

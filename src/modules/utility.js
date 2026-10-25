@@ -2,15 +2,18 @@
 const { SlashCommandBuilder, PermissionFlagsBits, ChannelType, MessageFlags } = require('discord.js');
 const db = require('../lib/db');
 const { baseEmbed, ok, fail, info, ts } = require('../lib/utils');
+const ui = require('../lib/ui');
+const { canUse } = require('../lib/access');
 
 const HELP = [
-  ['🎫 Tickets', '`/ticket-config` panneau de configuration\n`/ticket panel` envoyer le panel\n`/ticket fermer · ajouter · retirer · renommer · pause · transcript`\n`/ticket historique · stats`'],
-  ['🎨 Embeds', '`/embed creer` éditeur visuel\n`/embed modifier` modifier un message du bot\n`/embed envoyer · modeles · supprimer`'],
-  ['👋 Accueil', '`/accueil bienvenue · depart` messages\n`/accueil autorole` rôles à l\'arrivée\n`/accueil test · voir`'],
+  ['⚙️ Configuration', '`/config` menu principal\nTous les réglages se font avec des menus et des boutons'],
+  ['🎫 Tickets', '`/ticket` configuration (raisons, messages, panel, stats)\n`/ticket` dans un ticket : gérer le ticket'],
+  ['🎨 Embeds', '`/embed` créer, modifier, sauvegarder des messages'],
+  ['👋 Bienvenue', '`/bienvenue` arrivées, départs, rôles auto'],
+  ['📜 Logs', '`/logs` salons de logs'],
+  ['🎭 Rôles', '`/roles` menus de rôles'],
+  ['📋 Accès', '`/wl` whitelist et owners'],
   ['🛡️ Modération', '`/ban` `/unban` `/kick` `/mute` `/unmute`\n`/warn` `/avertissements`\n`/clear` `/verrouiller` `/slowmode`'],
-  ['📜 Logs', '`/logs salon` choisir les salons\n`/logs voir`'],
-  ['🎭 Rôles', '`/roles creer · ajouter · retirer`'],
-  ['👑 Accès', '`/owner ajouter · retirer · liste`\n`/wl ajouter · retirer` membres/rôles\n`/wl autoriser · interdire` commandes\n`/wl mode · liste`'],
   ['🧰 Utilitaires', '`/sondage` `/suggestion` `/dire`\n`/userinfo` `/serverinfo` `/avatar` `/ping`'],
 ];
 
@@ -133,7 +136,7 @@ const commands = [
     async execute(interaction) {
       const data = db.guild(interaction.guildId);
       const channel = data.suggestions.channelId && interaction.guild.channels.cache.get(data.suggestions.channelId);
-      if (!channel) return fail(interaction, 'Les suggestions ne sont pas configurées (`/suggestions-config`).');
+      if (!channel) return fail(interaction, 'Les suggestions ne sont pas configurées (`/config` > Suggestions).');
       data.suggestions.counter += 1;
       db.save(interaction.guildId);
       const msg = await channel.send({
@@ -151,20 +154,41 @@ const commands = [
       return ok(interaction, `Suggestion envoyée dans ${channel} !`);
     },
   },
-  {
-    data: new SlashCommandBuilder()
-      .setName('suggestions-config')
-      .setDescription('Définir le salon des suggestions')
-      .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-      .setDMPermission(false)
-      .addChannelOption((o) => o.setName('salon').setDescription('Salon (vide = désactiver)').addChannelTypes(ChannelType.GuildText)),
-    async execute(interaction) {
-      const channel = interaction.options.getChannel('salon');
-      db.guild(interaction.guildId).suggestions.channelId = channel?.id || null;
-      db.save(interaction.guildId);
-      return ok(interaction, channel ? `Les suggestions arriveront dans ${channel}.` : 'Suggestions désactivées.');
-    },
-  },
 ];
 
-module.exports = { commands };
+// Panneau "Suggestions" (accessible depuis /config)
+function canConfigure(member) {
+  return canUse(member, 'config', PermissionFlagsBits.ManageGuild);
+}
+
+function suggestionsView(guild) {
+  const channelId = db.guild(guild.id).suggestions.channelId;
+  return {
+    embeds: [
+      info(
+        [
+          'Les membres proposent leurs idées avec `/suggestion`.',
+          'Elles sont publiées dans le salon choisi avec des votes 👍 / 👎 et un fil de discussion.',
+          '',
+          `**Salon :** ${channelId ? `<#${channelId}>` : '*désactivé*'}`,
+        ].join('\n'),
+      ).setTitle('💡 Suggestions'),
+    ],
+    components: [ui.channelSelect('sg:set', '💡 Salon des suggestions (vide = désactiver)', [ChannelType.GuildText], channelId)],
+  };
+}
+
+const components = {
+  async sg(interaction) {
+    if (!canConfigure(interaction.member)) return fail(interaction, 'Accès refusé.');
+    db.guild(interaction.guildId).suggestions.channelId = interaction.values[0] || null;
+    db.save(interaction.guildId);
+    return interaction.update(suggestionsView(interaction.guild));
+  },
+};
+
+module.exports = {
+  commands,
+  components,
+  dashboard: { key: 'config', label: 'Suggestions', emoji: '💡', canAccess: canConfigure, view: (interaction) => suggestionsView(interaction.guild) },
+};

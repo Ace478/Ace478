@@ -1,42 +1,75 @@
 // Logs automatiques du serveur : messages, membres, vocal, salons/rôles.
-const { SlashCommandBuilder, PermissionFlagsBits, ChannelType, MessageFlags, AuditLogEvent } = require('discord.js');
+const { SlashCommandBuilder, PermissionFlagsBits, ChannelType, MessageFlags, AuditLogEvent, StringSelectMenuBuilder, ButtonStyle } = require('discord.js');
+const ui = require('../lib/ui');
+const { canUse } = require('../lib/access');
 const db = require('../lib/db');
 const { sendLog, LOG_TYPES } = require('../lib/logger');
-const { baseEmbed, ok, info, ts, truncate } = require('../lib/utils');
+const { baseEmbed, fail, info, ts, truncate } = require('../lib/utils');
+
+function canManage(member) {
+  return canUse(member, 'logs', PermissionFlagsBits.ManageGuild);
+}
+
+const ICONS = { moderation: '🛡️', messages: '💬', members: '👥', voice: '🔊', tickets: '🎫', server: '🏗️' };
+
+function view(guild, selected = 'moderation') {
+  const logs = db.guild(guild.id).logs;
+  const embed = info(
+    [
+      'Chaque type de log peut aller dans un salon différent.',
+      '1️⃣ Choisissez un **type** dans le premier menu, 2️⃣ choisissez son **salon** dans le second.',
+      'Ou mettez **tout** dans un seul salon avec le troisième menu.',
+      '',
+      ...Object.entries(LOG_TYPES).map(([key, label]) => `${ICONS[key]} **${label}**
+${logs[key] ? `<#${logs[key]}>` : '*désactivé*'}`),
+    ].join('\n'),
+  ).setTitle('📜 Logs');
+  return {
+    embeds: [embed],
+    components: [
+      ui.row(
+        new StringSelectMenuBuilder()
+          .setCustomId('lg:type')
+          .setPlaceholder('1️⃣ Type de logs à configurer')
+          .addOptions(
+            Object.entries(LOG_TYPES).map(([value, label]) => ({
+              label: truncate(label, 100),
+              value,
+              emoji: ICONS[value],
+              default: value === selected,
+              description: logs[value] ? 'Activé' : 'Désactivé',
+            })),
+          ),
+      ),
+      ui.channelSelect(`lg:set:${selected}`, `2️⃣ Salon pour : ${truncate(LOG_TYPES[selected], 80)} (vide = désactiver)`, [ChannelType.GuildText], logs[selected]),
+      ui.channelSelect('lg:all', '📦 Mettre TOUS les logs dans ce salon…', [ChannelType.GuildText], null),
+      ui.row(ui.button('lg:off', 'Tout désactiver', '🔕', ButtonStyle.Danger)),
+    ],
+  };
+}
 
 const command = {
   data: new SlashCommandBuilder()
     .setName('logs')
     .setDescription('Configurer les salons de logs')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .setDMPermission(false)
-    .addSubcommand((s) =>
-      s
-        .setName('salon')
-        .setDescription('Définir le salon d\'un type de logs (sans salon = désactiver)')
-        .addStringOption((o) =>
-          o
-            .setName('type')
-            .setDescription('Type de logs')
-            .setRequired(true)
-            .addChoices({ name: 'Tous', value: 'all' }, ...Object.entries(LOG_TYPES).map(([value, name]) => ({ name, value }))),
-        )
-        .addChannelOption((o) => o.setName('salon').setDescription('Salon').addChannelTypes(ChannelType.GuildText)),
-    )
-    .addSubcommand((s) => s.setName('voir').setDescription('Voir la configuration des logs')),
+    .setDMPermission(false),
 
   async execute(interaction) {
-    const data = db.guild(interaction.guildId);
-    if (interaction.options.getSubcommand() === 'voir') {
-      const lines = Object.entries(LOG_TYPES).map(([key, label]) => `**${label}**\n${data.logs[key] ? `<#${data.logs[key]}>` : '*désactivé*'}`);
-      return interaction.reply({ embeds: [info(lines.join('\n')).setTitle('📜 Logs')], flags: MessageFlags.Ephemeral });
-    }
-    const type = interaction.options.getString('type');
-    const channel = interaction.options.getChannel('salon');
-    const keys = type === 'all' ? Object.keys(LOG_TYPES) : [type];
-    for (const key of keys) data.logs[key] = channel?.id || null;
+    return interaction.reply({ ...view(interaction.guild), flags: MessageFlags.Ephemeral });
+  },
+};
+
+const components = {
+  async lg(interaction, [action, key]) {
+    if (!canManage(interaction.member)) return fail(interaction, 'Accès refusé.');
+    const logs = db.guild(interaction.guildId).logs;
+    if (action === 'type') return interaction.update(view(interaction.guild, interaction.values[0]));
+    if (action === 'set') logs[key] = interaction.values[0] || null;
+    if (action === 'all') for (const type of Object.keys(LOG_TYPES)) logs[type] = interaction.values[0] || null;
+    if (action === 'off') for (const type of Object.keys(LOG_TYPES)) logs[type] = null;
     db.save(interaction.guildId);
-    return ok(interaction, channel ? `Logs **${type === 'all' ? 'tous types' : LOG_TYPES[type]}** envoyés dans ${channel}.` : 'Logs désactivés.');
+    return interaction.update(view(interaction.guild, action === 'set' ? key : 'moderation'));
   },
 };
 
@@ -152,4 +185,9 @@ const events = {
   },
 };
 
-module.exports = { commands: [command], events };
+module.exports = {
+  commands: [command],
+  components,
+  events,
+  dashboard: { key: 'logs', label: 'Logs', emoji: '📜', canAccess: canManage, view: (interaction) => view(interaction.guild) },
+};

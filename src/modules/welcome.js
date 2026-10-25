@@ -1,10 +1,15 @@
-// Messages de bienvenue / départ + rôles automatiques à l'arrivée.
-const { SlashCommandBuilder, PermissionFlagsBits, ChannelType, MessageFlags } = require('discord.js');
+// /bienvenue : panneau de configuration des messages d'arrivée / départ
+// et des rôles automatiques. Les messages se personnalisent avec l'éditeur d'embed.
+const { SlashCommandBuilder, PermissionFlagsBits, ChannelType, MessageFlags, ButtonStyle } = require('discord.js');
 const db = require('../lib/db');
-const { renderTemplate, memberVars, ok, fail, info } = require('../lib/utils');
+const ui = require('../lib/ui');
+const { canUse } = require('../lib/access');
+const { registerTarget, openBuilder } = require('./embeds');
+const { renderTemplate, memberVars, fail, info } = require('../lib/utils');
 
 const DEFAULTS = {
   welcome: {
+    content: '{user}',
     embeds: [
       {
         color: 0x3b82f6,
@@ -17,6 +22,7 @@ const DEFAULTS = {
     ],
   },
   leave: {
+    content: '',
     embeds: [
       {
         color: 0xef4444,
@@ -27,153 +33,138 @@ const DEFAULTS = {
   },
 };
 
-function buildMessage(guildData, type, member) {
-  const cfg = guildData[type];
-  const base = cfg.template && guildData.embeds[cfg.template] ? structuredClone(guildData.embeds[cfg.template]) : structuredClone(DEFAULTS[type]);
+const LABELS = { welcome: 'Message de bienvenue', leave: 'Message de départ' };
+
+// Message configuré (compatible avec l'ancien format modèle + texte).
+function messageOf(data, type) {
+  const cfg = data[type];
+  if (cfg.message) return cfg.message;
+  const base = cfg.template && data.embeds[cfg.template] ? structuredClone(data.embeds[cfg.template]) : structuredClone(DEFAULTS[type]);
   if (cfg.content) base.content = cfg.content;
-  return renderTemplate(base, memberVars(member, member.guild));
+  return base;
 }
 
-async function sendWelcome(member, type, { force = false } = {}) {
+function buildMessage(data, type, member) {
+  return renderTemplate(messageOf(data, type), memberVars(member, member.guild));
+}
+
+async function sendWelcome(member, type) {
   const data = db.guild(member.guild.id);
   const cfg = data[type];
-  if (!force && !cfg.enabled) return false;
-  const payload = buildMessage(data, type, member);
-  payload.allowedMentions = { users: [member.id] };
-  let sent = false;
+  if (!cfg.enabled) return;
+  const payload = { ...buildMessage(data, type, member), allowedMentions: { users: [member.id] } };
   if (cfg.channelId) {
     const channel = member.guild.channels.cache.get(cfg.channelId);
-    if (channel?.isTextBased()) sent = !!(await channel.send(payload).catch((err) => console.error('[accueil]', err.message)));
+    if (channel?.isTextBased()) await channel.send(payload).catch((err) => console.error('[bienvenue]', err.message));
   }
-  if (type === 'welcome' && cfg.dm) {
-    await member.send(payload).catch(() => null);
-    sent = true;
-  }
-  return sent;
+  if (type === 'welcome' && cfg.dm) await member.send(payload).catch(() => null);
 }
 
-function templateOption(o) {
-  return o.setName('modele').setDescription('Modèle d\'embed (/embed creer) — "aucun" pour le message par défaut').setAutocomplete(true);
+function canManage(member) {
+  return canUse(member, 'bienvenue', PermissionFlagsBits.ManageGuild);
+}
+
+function view(guild) {
+  const data = db.guild(guild.id);
+  const state = (cfg) => `${cfg.enabled ? '🟢 Activé' : '🔴 Désactivé'} • ${cfg.channelId ? `<#${cfg.channelId}>` : '*aucun salon*'}`;
+  const embed = info(
+    [
+      `**👋 Bienvenue :** ${state(data.welcome)}${data.welcome.dm ? ' • 📩 + MP' : ''}`,
+      `**😢 Départ :** ${state(data.leave)}`,
+      `**🎭 Rôles automatiques :** ${data.autoRoles.map((id) => `<@&${id}>`).join(' ') || '*aucun*'}`,
+      '',
+      '• Choisissez les salons et rôles avec les menus.',
+      '• **🎨 Personnaliser** ouvre l\'éditeur pour changer le texte, la couleur, l\'image (bannière), etc.',
+      '• **🧪 Tester** vous montre le message tel que les membres le verront.',
+    ].join('\n'),
+  ).setTitle('👋 Bienvenue & départs');
+
+  return {
+    embeds: [embed],
+    components: [
+      ui.channelSelect('wel:chan:welcome', '👋 Salon des messages de bienvenue', [ChannelType.GuildText, ChannelType.GuildAnnouncement], data.welcome.channelId),
+      ui.channelSelect('wel:chan:leave', '😢 Salon des messages de départ', [ChannelType.GuildText, ChannelType.GuildAnnouncement], data.leave.channelId),
+      ui.roleSelect('wel:roles', '🎭 Rôles donnés automatiquement à l\'arrivée', data.autoRoles),
+      ui.row(
+        ui.toggleButton('wel:toggle:welcome', 'Bienvenue', data.welcome.enabled),
+        ui.toggleButton('wel:toggle:leave', 'Départ', data.leave.enabled),
+        ui.toggleButton('wel:toggle:dm', 'MP de bienvenue', data.welcome.dm),
+      ),
+      ui.row(
+        ui.button('wel:edit:welcome', 'Personnaliser bienvenue', '🎨', ButtonStyle.Primary),
+        ui.button('wel:edit:leave', 'Personnaliser départ', '🎨', ButtonStyle.Primary),
+        ui.button('wel:test:welcome', 'Tester', '🧪'),
+        ui.button('wel:test:leave', 'Tester départ', '🧪'),
+      ),
+    ],
+  };
+}
+
+for (const type of ['welcome', 'leave']) {
+  registerTarget(type, {
+    load: (guild) => messageOf(db.guild(guild.id), type),
+    save: (guild, id, data) => {
+      db.guild(guild.id)[type].message = data;
+      db.save(guild.id);
+    },
+    title: () => LABELS[type],
+    back: (guild) => view(guild),
+  });
 }
 
 const command = {
   data: new SlashCommandBuilder()
-    .setName('accueil')
-    .setDescription('Messages de bienvenue, de départ et rôles automatiques')
+    .setName('bienvenue')
+    .setDescription('Configurer les messages de bienvenue, de départ et les rôles automatiques')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .setDMPermission(false)
-    .addSubcommand((s) =>
-      s
-        .setName('bienvenue')
-        .setDescription('Configurer le message de bienvenue')
-        .addBooleanOption((o) => o.setName('actif').setDescription('Activer / désactiver'))
-        .addChannelOption((o) => o.setName('salon').setDescription('Salon').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
-        .addStringOption((o) => o.setName('texte').setDescription('Texte au-dessus de l\'embed (ex: {user}). "aucun" pour retirer'))
-        .addStringOption(templateOption)
-        .addBooleanOption((o) => o.setName('mp').setDescription('Envoyer aussi le message en MP au nouveau membre')),
-    )
-    .addSubcommand((s) =>
-      s
-        .setName('depart')
-        .setDescription('Configurer le message de départ')
-        .addBooleanOption((o) => o.setName('actif').setDescription('Activer / désactiver'))
-        .addChannelOption((o) => o.setName('salon').setDescription('Salon').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
-        .addStringOption((o) => o.setName('texte').setDescription('Texte au-dessus de l\'embed. "aucun" pour retirer'))
-        .addStringOption(templateOption),
-    )
-    .addSubcommand((s) =>
-      s
-        .setName('autorole')
-        .setDescription('Ajouter / retirer un rôle donné automatiquement à l\'arrivée')
-        .addRoleOption((o) => o.setName('role').setDescription('Rôle').setRequired(true)),
-    )
-    .addSubcommand((s) =>
-      s
-        .setName('test')
-        .setDescription('Tester le message sur vous-même')
-        .addStringOption((o) =>
-          o
-            .setName('type')
-            .setDescription('Message à tester')
-            .setRequired(true)
-            .addChoices({ name: 'Bienvenue', value: 'welcome' }, { name: 'Départ', value: 'leave' }),
-        ),
-    )
-    .addSubcommand((s) => s.setName('voir').setDescription('Voir la configuration')),
-
-  async autocomplete(interaction) {
-    const focused = interaction.options.getFocused().toLowerCase();
-    const names = ['aucun', ...Object.keys(db.guild(interaction.guildId).embeds)];
-    await interaction.respond(
-      names
-        .filter((n) => n.includes(focused))
-        .slice(0, 25)
-        .map((n) => ({ name: n, value: n })),
-    );
-  },
+    .setDMPermission(false),
 
   async execute(interaction) {
-    const sub = interaction.options.getSubcommand();
-    const data = db.guild(interaction.guildId);
-    const o = interaction.options;
+    return interaction.reply({ ...view(interaction.guild), flags: MessageFlags.Ephemeral });
+  },
+};
 
-    if (sub === 'bienvenue' || sub === 'depart') {
-      const cfg = data[sub === 'bienvenue' ? 'welcome' : 'leave'];
-      if (o.getBoolean('actif') !== null) cfg.enabled = o.getBoolean('actif');
-      if (o.getChannel('salon')) {
-        cfg.channelId = o.getChannel('salon').id;
-        if (o.getBoolean('actif') === null) cfg.enabled = true;
-      }
-      const text = o.getString('texte');
-      if (text !== null) cfg.content = text.toLowerCase() === 'aucun' ? '' : text.replace(/\\n/g, '\n');
-      const template = o.getString('modele');
-      if (template !== null) {
-        if (template === 'aucun') cfg.template = null;
-        else if (!data.embeds[template]) return fail(interaction, `Le modèle \`${template}\` n'existe pas. Créez-le avec \`/embed creer\`.`);
-        else cfg.template = template;
-      }
-      if (sub === 'bienvenue' && o.getBoolean('mp') !== null) cfg.dm = o.getBoolean('mp');
-      db.save(interaction.guildId);
-      return ok(interaction, `Message de ${sub === 'bienvenue' ? 'bienvenue' : 'départ'} ${cfg.enabled ? 'activé' : 'désactivé'}${cfg.channelId ? ` dans <#${cfg.channelId}>` : ''}. Testez avec \`/accueil test\`.`);
+const components = {
+  async wel(interaction, [action, key]) {
+    if (!canManage(interaction.member)) return fail(interaction, 'Accès refusé.');
+    const { guild } = interaction;
+    const data = db.guild(guild.id);
+
+    if (action === 'chan') {
+      data[key].channelId = interaction.values[0] || null;
+      if (interaction.values[0]) data[key].enabled = true;
     }
 
-    if (sub === 'autorole') {
-      const role = o.getRole('role');
-      if (role.managed || role.id === interaction.guildId) return fail(interaction, 'Ce rôle ne peut pas être attribué.');
-      if (role.position >= interaction.guild.members.me.roles.highest.position) {
-        return fail(interaction, `Je ne peux pas donner ${role} : placez mon rôle **au-dessus** dans les paramètres du serveur.`);
+    if (action === 'roles') {
+      const me = guild.members.me;
+      const refused = [];
+      data.autoRoles = interaction.values.filter((id) => {
+        const role = guild.roles.cache.get(id);
+        const okRole = role && !role.managed && role.position < me.roles.highest.position;
+        if (!okRole) refused.push(id);
+        return okRole;
+      });
+      db.save(guild.id);
+      await interaction.update(view(guild));
+      if (refused.length) {
+        return fail(interaction, `Je ne peux pas donner ${refused.map((id) => `<@&${id}>`).join(' ')} : placez mon rôle **au-dessus** dans les paramètres du serveur.`);
       }
-      const idx = data.autoRoles.indexOf(role.id);
-      if (idx >= 0) data.autoRoles.splice(idx, 1);
-      else data.autoRoles.push(role.id);
-      db.save(interaction.guildId);
-      return ok(interaction, idx >= 0 ? `${role} ne sera plus donné automatiquement.` : `${role} sera donné à chaque nouveau membre.`);
-    }
-
-    if (sub === 'test') {
-      const type = o.getString('type');
-      const payload = buildMessage(data, type, interaction.member);
-      await interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
-      if (!data[type].channelId) await fail(interaction, 'Aucun salon configuré : le message ne sera envoyé nulle part.');
       return;
     }
 
-    if (sub === 'voir') {
-      const line = (cfg) =>
-        `${cfg.enabled ? '🟢 Actif' : '🔴 Inactif'} • ${cfg.channelId ? `<#${cfg.channelId}>` : '*aucun salon*'} • modèle : ${cfg.template ? `\`${cfg.template}\`` : '*par défaut*'}${cfg.content ? `\nTexte : ${cfg.content}` : ''}`;
-      return interaction.reply({
-        embeds: [
-          info(
-            [
-              `**Bienvenue :** ${line(data.welcome)}${data.welcome.dm ? ' • + MP' : ''}`,
-              `**Départ :** ${line(data.leave)}`,
-              `**Rôles automatiques :** ${data.autoRoles.map((id) => `<@&${id}>`).join(' ') || '*aucun*'}`,
-            ].join('\n\n'),
-          ).setTitle('👋 Accueil'),
-        ],
-        flags: MessageFlags.Ephemeral,
-      });
+    if (action === 'toggle') {
+      if (key === 'dm') data.welcome.dm = !data.welcome.dm;
+      else data[key].enabled = !data[key].enabled;
     }
+
+    if (action === 'edit') return openBuilder(interaction, key, null);
+
+    if (action === 'test') {
+      return interaction.reply({ ...buildMessage(data, key, interaction.member), flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+    }
+
+    db.save(guild.id);
+    return interaction.update(view(guild));
   },
 };
 
@@ -190,4 +181,9 @@ const events = {
   },
 };
 
-module.exports = { commands: [command], events };
+module.exports = {
+  commands: [command],
+  components,
+  events,
+  dashboard: { key: 'bienvenue', label: 'Bienvenue & départs', emoji: '👋', canAccess: canManage, view: (interaction) => view(interaction.guild) },
+};

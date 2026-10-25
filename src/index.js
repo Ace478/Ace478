@@ -114,4 +114,14 @@ process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 process.on('unhandledRejection', (err) => console.error('[unhandledRejection]', err));
 
-client.login(process.env.DISCORD_TOKEN);
+client.login(process.env.DISCORD_TOKEN).catch((err) => {
+  if (/disallowed intents/i.test(err.message)) {
+    console.error('❌ Intents manquants : sur https://discord.com/developers/applications > votre bot > Bot,');
+    console.error('   activez SERVER MEMBERS INTENT et MESSAGE CONTENT INTENT, cliquez sur Save Changes puis relancez.');
+  } else if (/token/i.test(err.message)) {
+    console.error('❌ Token invalide : vérifiez DISCORD_TOKEN dans le fichier .env.');
+  } else {
+    console.error('❌ Connexion impossible :', err.message);
+  }
+  process.exit(1);
+});

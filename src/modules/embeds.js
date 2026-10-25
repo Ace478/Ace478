@@ -1,28 +1,28 @@
-// Créateur d'embeds interactif : menus + formulaires, aperçu en direct,
-// modèles sauvegardés réutilisables partout (bienvenue, panels de tickets…).
+// Créateur d'embeds interactif : menus + formulaires, aperçu en direct.
+// Il sert aussi à personnaliser tous les messages du bot (bienvenue, tickets,
+// menus de rôles…) : chaque module enregistre une "cible" via registerTarget().
 const {
   SlashCommandBuilder,
   PermissionFlagsBits,
   ActionRowBuilder,
   StringSelectMenuBuilder,
   ChannelSelectMenuBuilder,
-  ButtonBuilder,
   ButtonStyle,
-  ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  ModalBuilder,
   ChannelType,
   AttachmentBuilder,
   MessageFlags,
 } = require('discord.js');
 const db = require('../lib/db');
+const { canUse } = require('../lib/access');
+const ui = require('../lib/ui');
 const {
   parseColor,
   colorToHex,
   memberVars,
   renderTemplate,
-  embedIsEmpty,
-  cleanEmbed,
   ok,
   fail,
   info,
@@ -30,7 +30,21 @@ const {
   truncate,
 } = require('../lib/utils');
 
-const sessions = new Map(); // userId -> { guildId, data, editTarget, name }
+const sessions = new Map(); // userId -> { guildId, data, target, editTarget, name, fromHub }
+const targets = new Map(); // kind -> { load, save, title, back, vars, allowSend, help }
+
+/**
+ * Permet à un module de rendre un de ses messages modifiable avec l'éditeur.
+ * def.load(guild, id) -> { content, embeds }       (peut être async)
+ * def.save(guild, id, data)                          (peut être async)
+ * def.back(guild, id, member) -> payload du panneau à réafficher
+ * def.title(guild, id) -> texte affiché en haut de l'éditeur
+ * def.vars(member, id) -> variables supplémentaires pour l'aperçu
+ * def.help -> variables spécifiques affichées dans l'aide
+ */
+function registerTarget(kind, def) {
+  targets.set(kind, def);
+}
 
 const VARIABLES_HELP = [
   '`{user}` mention du membre',
@@ -54,13 +68,15 @@ function current(session) {
 }
 
 function builderView(session, member) {
-  const vars = memberVars(member, member.guild);
+  const def = session.target ? targets.get(session.target.kind) : null;
+  const vars = memberVars(member, member.guild, def?.vars?.(member, session.target.id) || {});
   const rendered = renderTemplate(session.data, vars);
   const embeds = rendered.embeds.length
     ? rendered.embeds
     : [info('*Embed vide — utilisez le menu ci-dessous pour ajouter un titre, une description, une image…*').toJSON()];
 
-  const header = [`🛠️ **Éditeur d'embed**${session.name ? ` — modèle \`${session.name}\`` : ''}${session.editTarget ? ' — *modification d\'un message existant*' : ''}`];
+  const title = def ? def.title(member.guild, session.target.id) : session.name ? `modèle \`${session.name}\`` : session.editTarget ? 'modification d\'un message existant' : 'nouvel embed';
+  const header = [`🎨 **Éditeur** — ${title}`, '-# Aperçu ci-dessous. Modifiez avec le menu, puis enregistrez.'];
   if (session.data.content) header.push(`**Texte au-dessus de l'embed :**\n>>> ${truncate(rendered.content, 1500)}`);
 
   const e = current(session);
@@ -73,7 +89,7 @@ function builderView(session, member) {
       { label: 'Couleur', value: 'color', emoji: '🎨', description: e.color != null ? colorToHex(e.color) : 'Par défaut' },
       { label: 'Auteur', value: 'author', emoji: '👤', description: 'Petit texte + icône en haut' },
       { label: 'Pied de page', value: 'footer', emoji: '🔻', description: 'Petit texte + icône en bas' },
-      { label: 'Image & miniature', value: 'images', emoji: '🖼️', description: 'Grande image / petite image à droite' },
+      { label: 'Image & miniature', value: 'images', emoji: '🖼️', description: 'Grande image (bannière) / petite image à droite' },
       { label: 'Ajouter un champ', value: 'field_add', emoji: '➕', description: `${e.fields?.length || 0}/25 champs` },
       { label: 'Modifier / supprimer des champs', value: 'field_remove', emoji: '➖' },
       { label: e.timestamp ? 'Retirer l\'horodatage' : 'Ajouter l\'horodatage', value: 'timestamp', emoji: '🕒' },
@@ -81,28 +97,44 @@ function builderView(session, member) {
       { label: 'Importer du JSON', value: 'json', emoji: '📥', description: 'Compatible Discohook / autres bots' },
     );
 
-  const send = new ChannelSelectMenuBuilder()
-    .setCustomId('emb:send')
-    .setPlaceholder('📤 Envoyer dans un salon…')
-    .setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.PublicThread);
+  const rows = [new ActionRowBuilder().addComponents(menu)];
+
+  if (!def || def.allowSend) {
+    rows.push(
+      new ActionRowBuilder().addComponents(
+        new ChannelSelectMenuBuilder()
+          .setCustomId('emb:send')
+          .setPlaceholder('📤 Envoyer dans un salon…')
+          .setChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement, ChannelType.PublicThread),
+      ),
+    );
+  }
 
   const buttons = new ActionRowBuilder();
-  if (session.editTarget) {
-    buttons.addComponents(new ButtonBuilder().setCustomId('emb:apply').setLabel('Appliquer au message').setEmoji('✏️').setStyle(ButtonStyle.Success));
+  if (def) {
+    buttons.addComponents(
+      ui.button('emb:commit', 'Enregistrer', '💾', ButtonStyle.Success),
+      ui.button('emb:cancel', 'Annuler', '↩️'),
+    );
+  } else {
+    if (session.editTarget) buttons.addComponents(ui.button('emb:apply', 'Appliquer au message', '✏️', ButtonStyle.Success));
+    buttons.addComponents(ui.button('emb:save', 'Sauver en modèle', '💾', ButtonStyle.Primary));
   }
-  buttons.addComponents(
-    new ButtonBuilder().setCustomId('emb:save').setLabel('Sauvegarder').setEmoji('💾').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('emb:export').setLabel('JSON').setEmoji('📄').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('emb:vars').setLabel('Variables').setEmoji('❔').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('emb:reset').setLabel('Vider').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
-  );
+  buttons.addComponents(ui.button('emb:export', 'JSON', '📄'), ui.button('emb:vars', 'Variables', '❔'));
+  if (buttons.components.length < 5) buttons.addComponents(ui.button('emb:reset', 'Vider', '🗑️', ButtonStyle.Danger));
+  rows.push(buttons);
+  if (!def && session.fromHub) rows.push(ui.row(ui.backButton('emb:home', 'Liste des embeds')));
 
-  return {
-    content: header.join('\n'),
-    embeds,
-    components: [new ActionRowBuilder().addComponents(menu), new ActionRowBuilder().addComponents(send), buttons],
-    allowedMentions: { parse: [] },
-  };
+  return { content: header.join('\n'), embeds, components: rows, allowedMentions: { parse: [] } };
+}
+
+async function openBuilder(interaction, kind, id) {
+  const def = targets.get(kind);
+  const data = structuredClone((await def.load(interaction.guild, id)) || emptyData());
+  if (!data.embeds?.length) data.embeds = [{}];
+  const session = { guildId: interaction.guildId, data, target: { kind, id } };
+  sessions.set(interaction.user.id, session);
+  return interaction.update(builderView(session, interaction.member));
 }
 
 function input(id, label, value, { style = TextInputStyle.Short, required = false, max, placeholder } = {}) {
@@ -273,6 +305,7 @@ function applyModal(kind, session, fields) {
   return null;
 }
 
+
 function getSession(interaction) {
   const session = sessions.get(interaction.user.id);
   if (!session || session.guildId !== interaction.guildId) return null;
@@ -280,120 +313,123 @@ function getSession(interaction) {
 }
 
 async function expired(interaction) {
-  return fail(interaction, 'Session expirée (le bot a peut-être redémarré). Relancez `/embed creer`.');
+  return fail(interaction, 'Session expirée (le bot a peut-être redémarré). Rouvrez le menu.');
 }
 
-function templateChoices(guildId, focused) {
-  return Object.keys(db.guild(guildId).embeds)
-    .filter((n) => n.toLowerCase().includes(focused.toLowerCase()))
-    .slice(0, 25)
-    .map((n) => ({ name: n, value: n }));
+// ---------- Panneau /embed ----------
+
+function canManage(member) {
+  return canUse(member, 'embed', PermissionFlagsBits.ManageMessages);
 }
+
+function homeView(guild) {
+  const names = Object.keys(db.guild(guild.id).embeds);
+  const embed = info(
+    [
+      'Créez des messages personnalisés (règlement, annonces, infos…) et sauvegardez-les comme **modèles**.',
+      '',
+      '➕ **Nouvel embed** : ouvre l\'éditeur vide',
+      '✏️ **Modifier un message** : modifie un message déjà envoyé par le bot (collez son lien)',
+      '📂 **Menu ci-dessous** : modifier / envoyer un modèle sauvegardé',
+      '',
+      `**Modèles (${names.length}) :** ${names.map((n) => `\`${n}\``).join(' ') || '*aucun*'}`,
+      '',
+      '-# Les messages de bienvenue, de tickets et des menus de rôles se modifient depuis `/bienvenue`, `/ticket` et `/roles`.',
+    ].join('\n'),
+  ).setTitle('🎨 Embeds');
+  const rows = [];
+  if (names.length) {
+    rows.push(
+      ui.row(
+        new StringSelectMenuBuilder()
+          .setCustomId('emb:open')
+          .setPlaceholder('📂 Ouvrir un modèle')
+          .addOptions(names.slice(0, 25).map((n) => ({ label: truncate(n, 100), value: n, emoji: '💾' }))),
+      ),
+      ui.row(
+        new StringSelectMenuBuilder()
+          .setCustomId('emb:del')
+          .setPlaceholder('🗑️ Supprimer un modèle')
+          .addOptions(names.slice(0, 25).map((n) => ({ label: truncate(n, 100), value: n, emoji: '🗑️' }))),
+      ),
+    );
+  }
+  rows.push(
+    ui.row(
+      ui.button('emb:new', 'Nouvel embed', '➕', ButtonStyle.Success),
+      ui.button('emb:editmsg', 'Modifier un message', '✏️', ButtonStyle.Primary),
+    ),
+  );
+  return { content: '', embeds: [embed], components: rows };
+}
+
+registerTarget('template', {
+  load: (guild, name) => db.guild(guild.id).embeds[name],
+  save: (guild, name, data) => {
+    db.guild(guild.id).embeds[name] = data;
+    db.save(guild.id);
+  },
+  title: (guild, name) => `modèle \`${name}\``,
+  back: (guild) => homeView(guild),
+  allowSend: true,
+});
 
 const command = {
   data: new SlashCommandBuilder()
     .setName('embed')
     .setDescription('Créer et gérer des messages personnalisés (embeds)')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
-    .setDMPermission(false)
-    .addSubcommand((s) =>
-      s
-        .setName('creer')
-        .setDescription('Ouvrir l\'éditeur d\'embed')
-        .addStringOption((o) => o.setName('modele').setDescription('Partir d\'un modèle existant').setAutocomplete(true)),
-    )
-    .addSubcommand((s) =>
-      s
-        .setName('modifier')
-        .setDescription('Modifier un message déjà envoyé par le bot')
-        .addStringOption((o) => o.setName('lien').setDescription('Lien du message (clic droit > Copier le lien)').setRequired(true)),
-    )
-    .addSubcommand((s) =>
-      s
-        .setName('envoyer')
-        .setDescription('Envoyer directement un modèle')
-        .addStringOption((o) => o.setName('modele').setDescription('Nom du modèle').setRequired(true).setAutocomplete(true))
-        .addChannelOption((o) =>
-          o.setName('salon').setDescription('Salon (par défaut : ici)').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
-        ),
-    )
-    .addSubcommand((s) => s.setName('modeles').setDescription('Lister les modèles sauvegardés'))
-    .addSubcommand((s) =>
-      s
-        .setName('supprimer')
-        .setDescription('Supprimer un modèle')
-        .addStringOption((o) => o.setName('modele').setDescription('Nom du modèle').setRequired(true).setAutocomplete(true)),
-    ),
-
-  async autocomplete(interaction) {
-    await interaction.respond(templateChoices(interaction.guildId, interaction.options.getFocused()));
-  },
+    .setDMPermission(false),
 
   async execute(interaction) {
-    const sub = interaction.options.getSubcommand();
-    const store = db.guild(interaction.guildId);
-
-    if (sub === 'creer') {
-      const name = interaction.options.getString('modele');
-      if (name && !store.embeds[name]) return fail(interaction, `Le modèle \`${name}\` n'existe pas.`);
-      const session = {
-        guildId: interaction.guildId,
-        data: name ? structuredClone(store.embeds[name]) : emptyData(),
-        name,
-      };
-      sessions.set(interaction.user.id, session);
-      return interaction.reply({ ...builderView(session, interaction.member), flags: MessageFlags.Ephemeral });
-    }
-
-    if (sub === 'modifier') {
-      const message = await fetchMessageFromLink(interaction.guild, interaction.options.getString('lien'));
-      if (!message) return fail(interaction, 'Message introuvable. Vérifiez le lien.');
-      if (message.author.id !== interaction.client.user.id) return fail(interaction, 'Je ne peux modifier que mes propres messages.');
-      const session = {
-        guildId: interaction.guildId,
-        data: { content: message.content || '', embeds: message.embeds.length ? message.embeds.map((e) => e.toJSON()) : [{}] },
-        editTarget: { channelId: message.channelId, messageId: message.id },
-      };
-      sessions.set(interaction.user.id, session);
-      return interaction.reply({ ...builderView(session, interaction.member), flags: MessageFlags.Ephemeral });
-    }
-
-    if (sub === 'envoyer') {
-      const name = interaction.options.getString('modele');
-      const template = store.embeds[name];
-      if (!template) return fail(interaction, `Le modèle \`${name}\` n'existe pas.`);
-      const channel = interaction.options.getChannel('salon') || interaction.channel;
-      const payload = renderTemplate(template, memberVars(interaction.member, interaction.guild));
-      if (!payload.content && !payload.embeds.length) return fail(interaction, 'Ce modèle est vide.');
-      await channel.send(payload);
-      return ok(interaction, `Modèle \`${name}\` envoyé dans ${channel}.`);
-    }
-
-    if (sub === 'modeles') {
-      const names = Object.keys(store.embeds);
-      return interaction.reply({
-        embeds: [info(names.length ? names.map((n) => `• \`${n}\``).join('\n') : 'Aucun modèle. Créez-en un avec `/embed creer`.').setTitle('💾 Modèles d\'embed')],
-        flags: MessageFlags.Ephemeral,
-      });
-    }
-
-    if (sub === 'supprimer') {
-      const name = interaction.options.getString('modele');
-      if (!store.embeds[name]) return fail(interaction, `Le modèle \`${name}\` n'existe pas.`);
-      delete store.embeds[name];
-      db.save(interaction.guildId);
-      return ok(interaction, `Modèle \`${name}\` supprimé.`);
-    }
+    return interaction.reply({ ...homeView(interaction.guild), flags: MessageFlags.Ephemeral });
   },
 };
 
 const components = {
   async emb(interaction, args) {
     const [action, kind] = args;
+    const { guild } = interaction;
+
+    // Actions du panneau /embed
+    if (['home', 'open', 'del', 'new', 'editmsg'].includes(action) || (action === 'm' && kind === 'editmsg')) {
+      if (!canManage(interaction.member)) return fail(interaction, 'Accès refusé.');
+      if (action === 'home') return interaction.update(homeView(guild));
+      if (action === 'open') return openBuilder(interaction, 'template', interaction.values[0]);
+      if (action === 'del') {
+        delete db.guild(guild.id).embeds[interaction.values[0]];
+        db.save(guild.id);
+        return interaction.update(homeView(guild));
+      }
+      if (action === 'new') {
+        const session = { guildId: guild.id, data: emptyData(), fromHub: true };
+        sessions.set(interaction.user.id, session);
+        return interaction.update(builderView(session, interaction.member));
+      }
+      if (action === 'editmsg') {
+        return interaction.showModal(
+          ui.modal('emb:m:editmsg', 'Modifier un message du bot', [
+            { id: 'link', label: 'Lien du message', required: true, placeholder: 'Clic droit sur le message > Copier le lien du message' },
+          ]),
+        );
+      }
+      const message = await fetchMessageFromLink(guild, interaction.fields.getTextInputValue('link').trim());
+      if (!message) return fail(interaction, 'Message introuvable. Vérifiez le lien.');
+      if (message.author.id !== interaction.client.user.id) return fail(interaction, 'Je ne peux modifier que mes propres messages.');
+      const session = {
+        guildId: guild.id,
+        data: { content: message.content || '', embeds: message.embeds.length ? message.embeds.map((e) => e.toJSON()) : [{}] },
+        editTarget: { channelId: message.channelId, messageId: message.id },
+        fromHub: true,
+      };
+      sessions.set(interaction.user.id, session);
+      return interaction.update(builderView(session, interaction.member));
+    }
+
     const session = getSession(interaction);
     if (!session) return expired(interaction);
+    const def = session.target ? targets.get(session.target.kind) : null;
 
-    // Menu "que modifier"
     if (action === 'edit') {
       const choice = interaction.values[0];
       if (choice === 'timestamp') {
@@ -408,23 +444,29 @@ const components = {
     if (action === 'm') {
       if (kind === 'save') {
         const name = interaction.fields.getTextInputValue('name').trim().toLowerCase().replace(/\s+/g, '-');
-        const store = db.guild(interaction.guildId);
-        const data = structuredClone(session.data);
-        data.embeds = (data.embeds || []).filter((e) => !embedIsEmpty(cleanEmbed({ ...e, timestamp: undefined })));
-        store.embeds[name] = data;
-        db.save(interaction.guildId);
+        db.guild(guild.id).embeds[name] = structuredClone(session.data);
+        db.save(guild.id);
         session.name = name;
         await interaction.update(builderView(session, interaction.member));
-        return ok(interaction, `Modèle \`${name}\` sauvegardé. Utilisable avec \`/embed envoyer\`, les messages de bienvenue, les panels de tickets…`);
+        return ok(interaction, `Modèle \`${name}\` sauvegardé.`);
       }
       const error = applyModal(kind, session, interaction.fields);
       if (error) return fail(interaction, error);
       return interaction.update(builderView(session, interaction.member));
     }
 
+    if (action === 'commit' || action === 'cancel') {
+      if (!def) return expired(interaction);
+      if (action === 'commit') await def.save(guild, session.target.id, structuredClone(session.data));
+      sessions.delete(interaction.user.id);
+      await interaction.update({ content: '', ...(await def.back(guild, session.target.id, interaction.member)) });
+      if (action === 'commit') return ok(interaction, 'Message enregistré !');
+      return;
+    }
+
     if (action === 'send') {
-      const channel = interaction.guild.channels.cache.get(interaction.values[0]);
-      const payload = renderTemplate(session.data, memberVars(interaction.member, interaction.guild));
+      const channel = guild.channels.cache.get(interaction.values[0]);
+      const payload = renderTemplate(session.data, memberVars(interaction.member, guild));
       if (!payload.content && !payload.embeds.length) return fail(interaction, 'Le message est vide.');
       if (!channel?.permissionsFor(interaction.client.user)?.has(['SendMessages', 'EmbedLinks'])) {
         return fail(interaction, `Je n'ai pas la permission d'écrire dans ${channel}.`);
@@ -436,10 +478,10 @@ const components = {
 
     if (action === 'apply') {
       const target = session.editTarget;
-      const channel = await interaction.guild.channels.fetch(target.channelId).catch(() => null);
+      const channel = await guild.channels.fetch(target.channelId).catch(() => null);
       const message = await channel?.messages.fetch(target.messageId).catch(() => null);
       if (!message) return fail(interaction, 'Le message d\'origine n\'existe plus.');
-      const payload = renderTemplate(session.data, memberVars(interaction.member, interaction.guild));
+      const payload = renderTemplate(session.data, memberVars(interaction.member, guild));
       await message.edit({ content: payload.content || null, embeds: payload.embeds });
       return ok(interaction, `Message modifié : ${message.url}`);
     }
@@ -456,7 +498,7 @@ const components = {
       return interaction.reply({
         embeds: [
           info(
-            `${VARIABLES_HELP}\n\n**Astuces**\n• Titres dans la description : \`# Gros\`, \`## Moyen\`, \`### Petit\`\n• Citation : \`> texte\`  • Liste : \`- élément\`\n• Emoji perso : \`<:nom:id>\` (tapez \`\\:emoji:\` sur Discord pour l'obtenir)\n• Mention de salon \`<#id>\`, de rôle \`<@&id>\``,
+            `${VARIABLES_HELP}${def?.help ? `\n\n**Spécifiques à ce message**\n${def.help}` : ''}\n\n**Astuces**\n• Titres dans la description : \`# Gros\`, \`## Moyen\`, \`### Petit\`\n• Citation : \`> texte\`  • Liste : \`- élément\`  • Petit texte : \`-# texte\`\n• Emoji perso : \`<:nom:id>\` (tapez \`\\:emoji:\` sur Discord pour l'obtenir)\n• Mention de salon \`<#id>\`, de rôle \`<@&id>\`\n• Image : clic droit sur une image dans Discord > *Copier le lien*`,
           ).setTitle('❔ Variables & mise en forme'),
         ],
         flags: MessageFlags.Ephemeral,
@@ -470,4 +512,10 @@ const components = {
   },
 };
 
-module.exports = { commands: [command], components };
+module.exports = {
+  commands: [command],
+  components,
+  registerTarget,
+  openBuilder,
+  dashboard: { key: 'embed', label: 'Embeds', emoji: '🎨', canAccess: canManage, view: (interaction) => homeView(interaction.guild) },
+};

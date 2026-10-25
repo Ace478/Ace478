@@ -9,4 +9,5 @@ module.exports = [
   require('./rolemenus'),
   require('./utility'),
   require('./whitelist'),
+  require('./config'),
 ];
