@@ -82,6 +82,8 @@ async function builderView(session, member) {
 
   const title = def ? def.title(member.guild, session.target.id) : session.name ? `modèle \`${session.name}\`` : session.editTarget ? 'modification d\'un message existant' : 'nouvel embed';
   const header = [`🎨 **Éditeur** — ${title}`, '-# Aperçu ci-dessous. Modifiez avec le menu, puis enregistrez.'];
+  const note = def?.note?.(member.guild, session.target.id);
+  if (note) header.push(note);
   if (session.data.content) header.push(`**Texte au-dessus de l'embed :**\n>>> ${truncate(rendered.content, 1500)}`);
 
   // Contrôles automatiques : salons introuvables, bannière trop petite

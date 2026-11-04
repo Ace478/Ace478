@@ -2,6 +2,7 @@
 // largeur choisie (📏 Largeur dans l'éditeur). Sur Discord, c'est la taille de
 // l'image qui fixe la largeur de l'embed : une bannière large = un embed large.
 const zlib = require('node:zlib');
+const { ComponentType, MessageFlags } = require('discord.js');
 const { deepVars, renderTemplate, isUrl, fullSizeImage } = require('./utils');
 
 let sharp = null;
@@ -98,4 +99,49 @@ async function renderMessage(template, vars) {
   return { ...renderTemplate(data, null), files };
 }
 
-module.exports = { renderMessage, hasSharp: () => !!sharp };
+/**
+ * Même message, mais affiché en « carte » (Components V2) comme les gros bots :
+ * la carte prend toute la largeur, la bannière s'étire en entier, l'avatar est
+ * à droite du texte et les mentions marchent aussi dans les # gros titres.
+ * Se configure avec l'éditeur d'embed classique (texte, couleur, images, pied de page…).
+ */
+async function renderCard(template, vars) {
+  const data = structuredClone(template || {});
+  // La largeur forcée ne sert à rien ici : la carte est toujours large.
+  for (const embed of data.embeds || []) if (embed?.image?.width) delete embed.image.width;
+  const { content, embeds, files } = await renderMessage(data, vars);
+  const components = [];
+  if (content) components.push({ type: ComponentType.TextDisplay, content });
+
+  for (const e of embeds) {
+    const text = [];
+    if (e.author?.name) text.push(`-# ${e.author.name}`);
+    if (e.title) text.push(`## ${e.url ? `[${e.title}](${e.url})` : e.title}`);
+    if (e.description) text.push(e.description);
+    for (const f of e.fields || []) text.push(`**${f.name}**\n${f.value}`);
+    const body = text.join('\n').slice(0, 3800) || '​';
+
+    const inner = [];
+    if (e.thumbnail?.url) {
+      inner.push({
+        type: ComponentType.Section,
+        components: [{ type: ComponentType.TextDisplay, content: body }],
+        accessory: { type: ComponentType.Thumbnail, media: { url: e.thumbnail.url } },
+      });
+    } else {
+      inner.push({ type: ComponentType.TextDisplay, content: body });
+    }
+    if (e.image?.url) inner.push({ type: ComponentType.MediaGallery, items: [{ media: { url: e.image.url } }] });
+    const foot = [e.footer?.text, e.timestamp ? `<t:${Math.floor(Date.parse(e.timestamp) / 1000)}:f>` : null].filter(Boolean).join(' • ');
+    if (foot) inner.push({ type: ComponentType.TextDisplay, content: `-# ${foot}` });
+
+    const container = { type: ComponentType.Container, components: inner };
+    if (typeof e.color === 'number') container.accent_color = e.color;
+    components.push(container);
+  }
+
+  if (!components.length) components.push({ type: ComponentType.TextDisplay, content: '​' });
+  return { components, files, flags: MessageFlags.IsComponentsV2 };
+}
+
+module.exports = { renderMessage, renderCard, hasSharp: () => !!sharp };

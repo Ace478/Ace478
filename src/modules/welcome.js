@@ -6,7 +6,7 @@ const ui = require('../lib/ui');
 const { canUse } = require('../lib/access');
 const { registerTarget, openBuilder } = require('./embeds');
 const { memberVars, fail, info } = require('../lib/utils');
-const { renderMessage } = require('../lib/media');
+const { renderMessage, renderCard } = require('../lib/media');
 
 const DEFAULTS = {
   welcome: {
@@ -47,8 +47,12 @@ function messageOf(data, type) {
   return base;
 }
 
+// Par défaut : affichage en carte large (comme les gros serveurs). Désactivable dans /bienvenue.
+const isCard = (data, type) => data[type].card !== false;
+
 function buildMessage(data, type, member) {
-  return renderMessage(messageOf(data, type), memberVars(member, member.guild));
+  const render = isCard(data, type) ? renderCard : renderMessage;
+  return render(messageOf(data, type), memberVars(member, member.guild));
 }
 
 async function sendWelcome(member, type) {
@@ -74,11 +78,13 @@ function view(guild) {
     [
       `**👋 Bienvenue :** ${state(data.welcome)}${data.welcome.dm ? ' • 📩 + MP' : ''}`,
       `**😢 Départ :** ${state(data.leave)}`,
+      `**🪪 Style :** arrivée en ${isCard(data, 'welcome') ? '**carte large**' : 'embed classique'} • départ en ${isCard(data, 'leave') ? '**carte large**' : 'embed classique'}`,
       `**🎭 Rôles automatiques :** ${data.autoRoles.map((id) => `<@&${id}>`).join(' ') || '*aucun*'}`,
       '',
       '• Choisissez les salons et rôles avec les menus.',
       '• **🎨 Personnaliser** ouvre l\'éditeur pour changer le texte, la couleur, l\'image (bannière), etc.',
       '• **🧪 Tester** vous montre le message tel que les membres le verront.',
+      '• **Carte large** : le message prend toute la largeur, la bannière s\'étire en entier et l\'avatar s\'affiche à droite du texte.',
     ].join('\n'),
   ).setTitle('👋 Bienvenue & départs');
 
@@ -92,6 +98,8 @@ function view(guild) {
         ui.toggleButton('wel:toggle:welcome', 'Bienvenue', data.welcome.enabled),
         ui.toggleButton('wel:toggle:leave', 'Départ', data.leave.enabled),
         ui.toggleButton('wel:toggle:dm', 'MP de bienvenue', data.welcome.dm),
+        ui.toggleButton('wel:card:welcome', 'Carte large arrivée', isCard(data, 'welcome')),
+        ui.toggleButton('wel:card:leave', 'Carte large départ', isCard(data, 'leave')),
       ),
       ui.row(
         ui.button('wel:edit:welcome', 'Personnaliser bienvenue', '🎨', ButtonStyle.Primary),
@@ -112,6 +120,10 @@ for (const type of ['welcome', 'leave']) {
       db.save(guild.id);
     },
     title: () => LABELS[type],
+    note: (guild) =>
+      isCard(db.guild(guild.id), type)
+        ? '🪪 **Envoyé en carte large** : l\'aperçu ci-dessous est un embed classique (plus étroit). Utilisez **🧪 Tester** dans /bienvenue pour voir le vrai rendu.\n-# *Texte au-dessus* = au-dessus de la carte • *Miniature* = à droite du texte • *Grande image* = bannière pleine largeur.'
+        : null,
     back: (guild) => view(guild),
   });
 }
@@ -160,6 +172,8 @@ const components = {
       if (key === 'dm') data.welcome.dm = !data.welcome.dm;
       else data[key].enabled = !data[key].enabled;
     }
+
+    if (action === 'card') data[key].card = !isCard(data, key);
 
     if (action === 'reset') {
       data[key].message = null;
