@@ -124,6 +124,18 @@ Par défaut, chaque commande demande la permission Discord habituelle (ex. *Bann
 
 ---
 
+## Mettre à jour le bot (hébergeur avec Git)
+
+Le code est cloné depuis ce dépôt dans le dossier `sunbot` de l'hébergeur (fichier principal : `sunbot/src/index.js`).
+
+1. **Fichiers → Git → Dépôts de ce serveur → Mettre à jour**
+2. **Redémarrer**
+
+Le token (variable `DISCORD_TOKEN` de l'hébergeur) et la configuration (`sunbot/data`) ne sont jamais sur GitHub et ne sont pas touchés par les mises à jour.
+Si une mise à jour ajoute une dépendance, copiez `sunbot/package.json` à la racine avant de redémarrer.
+
+Chaque push sur ce dépôt est annoncé dans le salon Discord des commits (webhook GitHub).
+
 ## Structure du code
 
 ```
