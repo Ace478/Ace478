@@ -1,0 +1,21 @@
+# Envoie un message personnalisé dans Discord à chaque push (style "mises à jour").
+# Nécessite le secret DISCORD_WEBHOOK_URL : Settings > Secrets and variables > Actions.
+name: Notification Discord des commits
+
+on:
+  push:
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Envoyer le message Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: node .github/scripts/discord-commits.js
