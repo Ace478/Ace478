@@ -126,7 +126,7 @@ Par défaut, chaque commande demande la permission Discord habituelle (ex. *Bann
 
 ## Mettre à jour le bot (hébergeur avec Git)
 
-Le code est cloné depuis ce dépôt dans le dossier `sunbot` de l'hébergeur (fichier principal : `sunbot/src/index.js`).
+Le code est cloné depuis ce dépôt (branche `claude/discord-bot-tickets-soto1o`) dans le dossier `sunbot` de l'hébergeur (fichier principal : `sunbot/src/index.js`).
 
 1. **Fichiers → Git → Dépôts de ce serveur → Mettre à jour**
 2. **Redémarrer**
