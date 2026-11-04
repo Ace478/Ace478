@@ -134,7 +134,7 @@ Le code est cloné depuis ce dépôt (branche `claude/discord-bot-tickets-soto1o
 Le token (variable `DISCORD_TOKEN` de l'hébergeur) et la configuration (`sunbot/data`) ne sont jamais sur GitHub et ne sont pas touchés par les mises à jour.
 Si une mise à jour ajoute une dépendance, copiez `sunbot/package.json` à la racine avant de redémarrer.
 
-Chaque push sur ce dépôt est annoncé dans le salon Discord des commits (webhook GitHub).
+Chaque push sur ce dépôt est annoncé dans le salon Discord des commits par GitHub Actions (`.github/workflows/discord-commits.yml`, secret `DISCORD_WEBHOOK_URL`). Le texte, la couleur et la bannière se règlent en haut de `.github/scripts/discord-commits.js`.
 
 ## Structure du code
 
