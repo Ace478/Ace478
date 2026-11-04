@@ -4,7 +4,7 @@ const fs = require('node:fs');
 // ----- Personnalisation -----
 const SERVER_LABEL = 'Serveur principal';
 const NOTE = 'appliqué au prochain redémarrage';
-const COLOR = 0x3b82f6;
+const COLOR = 0x22c55e; // vert
 // Bannière en bas du message. Mettez une image dans le dépôt (.github/update-banner.png)
 // pour un lien qui n'expire jamais ; sinon le lien ci-dessous est utilisé.
 const BANNER_URL =
@@ -41,7 +41,9 @@ const lines = commits.map((c) => {
   const [title, ...rest] = c.message.split('\n');
   const mergedBranch = title.match(/^Merge (?:remote-tracking )?branch '([^']+)'/);
   if (mergedBranch) return `-# ↳ ${sha} merge de ${mergedBranch[1]} par **${user(c)}**`;
-  const body = [title, ...rest.filter((l) => l.trim())].map((l) => `> ${l}`).join('\n');
+  // On masque les lignes techniques ajoutées en bas des commits (co-auteurs, session…).
+  const details = rest.filter((l) => l.trim() && !/^(co-authored-by|claude-session|signed-off-by):/i.test(l.trim()));
+  const body = [title, ...details].map((l) => `> ${l}`).join('\n');
   return `${sha} **${user(c)}**\n${body}`;
 });
 
