@@ -1,4 +1,4 @@
-# ☀️ Sun Bot — bot Discord polyvalent
+# ☀️ Sun Bot — bot Discord 
 
 Bot Discord tout-en-un, en français. **Toute la configuration se fait avec des menus et des boutons**, et **chaque message est un embed personnalisable** (titre, texte, couleur, bannière, emojis…).
 
